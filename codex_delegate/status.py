@@ -15,6 +15,7 @@ try:
         DEFAULT_TIMEOUT_SECONDS,
         DOCTOR_TIMEOUT_SECONDS,
         HARD_CAP_TIMEOUT_SECONDS,
+        MAX_MODELS_STDOUT_CHARS,
         SANDBOX_READ_ONLY,
         SANDBOX_WORKSPACE_WRITE,
         structured_error,
@@ -30,6 +31,7 @@ try:
         default_which,
         run_readonly_cli,
     )
+    from .worktree import decode_git_path
 except ImportError:  # pragma: no cover
     from guard import (
         ALLOWED_SANDBOX_MODES,
@@ -37,6 +39,7 @@ except ImportError:  # pragma: no cover
         DEFAULT_TIMEOUT_SECONDS,
         DOCTOR_TIMEOUT_SECONDS,
         HARD_CAP_TIMEOUT_SECONDS,
+        MAX_MODELS_STDOUT_CHARS,
         SANDBOX_READ_ONLY,
         SANDBOX_WORKSPACE_WRITE,
         structured_error,
@@ -52,6 +55,7 @@ except ImportError:  # pragma: no cover
         default_which,
         run_readonly_cli,
     )
+    from worktree import decode_git_path
 
 try:
     from . import __version__ as PACKAGE_VERSION
@@ -216,20 +220,37 @@ def run_doctor_json(
         )
 
     stdout = result.get("stdout") or ""
+    rc = result.get("returncode", 1)
+    if not str(stdout).strip():
+        # rc==0 with empty body is not a successful doctor report.
+        return structured_error(
+            "DOCTOR_PARSE_FAILED",
+            "codex doctor --json produced no JSON body",
+            returncode=rc,
+            text_preview=(result.get("stderr") or "")[:1000],
+        )
     try:
         parsed = json.loads(stdout)
-        return {
-            "ok": result.get("returncode", 1) == 0,
-            "doctor": parsed,
-            "returncode": result.get("returncode"),
-        }
     except (json.JSONDecodeError, TypeError, ValueError):
-        return {
-            "ok": result.get("returncode", 1) == 0,
-            "doctor": None,
-            "text_preview": (stdout or result.get("stderr") or "")[:1000],
-            "returncode": result.get("returncode"),
-        }
+        # Honesty: a non-JSON body is not a successful doctor run even when
+        # the process exited 0 (the class of bug this package keeps producing).
+        return structured_error(
+            "DOCTOR_PARSE_FAILED",
+            "codex doctor --json output is not valid JSON",
+            returncode=rc,
+            text_preview=(stdout or result.get("stderr") or "")[:1000],
+        )
+    if not isinstance(parsed, (dict, list)):
+        return structured_error(
+            "DOCTOR_PARSE_FAILED",
+            "codex doctor --json output is not a JSON object or array",
+            returncode=rc,
+        )
+    return {
+        "ok": rc == 0,
+        "doctor": parsed,
+        "returncode": rc,
+    }
 
 
 def run_models(
@@ -253,12 +274,20 @@ def run_models(
         return structured_error("CODEX_MISSING", "codex binary not found")
 
     stdout = result.get("stdout") or ""
+    if len(stdout) > MAX_MODELS_STDOUT_CHARS:
+        return structured_error(
+            "MODELS_TOO_LARGE",
+            f"codex debug models output exceeds {MAX_MODELS_STDOUT_CHARS} characters",
+            models=[],
+            count=0,
+        )
     try:
         raw = json.loads(stdout)
     except (json.JSONDecodeError, TypeError, ValueError):
         return {
             "ok": False,
             "models": [],
+            "count": 0,
             "error": "MODELS_PARSE_FAILED",
             "message": "could not parse codex debug models output",
             "text_preview": stdout[:500],
@@ -268,11 +297,36 @@ def run_models(
     if isinstance(raw, list):
         models_list = raw
     elif isinstance(raw, dict):
-        models_list = raw.get("models") or raw.get("data") or list(raw.values())
-        if models_list and not isinstance(models_list[0], dict):
-            models_list = [raw] if "slug" in raw or "id" in raw else []
+        if "models" in raw:
+            candidate = raw.get("models")
+            if candidate is None:
+                models_list = []
+            elif isinstance(candidate, list):
+                models_list = candidate
+            else:
+                # e.g. models: "gpt-5" — must not iterate characters.
+                return {
+                    "ok": False,
+                    "models": [],
+                    "count": 0,
+                    "error": "MODELS_PARSE_FAILED",
+                    "message": "codex debug models: 'models' field is not a list",
+                }
+        elif isinstance(raw.get("data"), list):
+            models_list = raw["data"]
+        elif "slug" in raw or "id" in raw:
+            models_list = [raw]
+        else:
+            # Object without a models list is an empty catalog, not a walk of values.
+            models_list = []
     else:
-        models_list = []
+        return {
+            "ok": False,
+            "models": [],
+            "count": 0,
+            "error": "MODELS_PARSE_FAILED",
+            "message": "codex debug models output is not a JSON object or array",
+        }
 
     reduced: list[dict[str, Any]] = []
     for item in models_list:
@@ -332,7 +386,10 @@ def list_lanes(
         if line.startswith("worktree "):
             if current:
                 _maybe_add_lane(current, lanes, git_runner=git, timeout=timeout)
-            current = {"worktree_path": line[len("worktree "):].strip()}
+            # Path may be C-quoted when it contains spaces or non-ASCII.
+            current = {
+                "worktree_path": decode_git_path(line[len("worktree "):].strip()),
+            }
         elif line.startswith("branch "):
             ref = line[len("branch "):].strip()
             # refs/heads/codex/foo
@@ -342,6 +399,9 @@ def list_lanes(
             current["branch"] = branch
         elif line.startswith("HEAD "):
             current["head"] = line[len("HEAD "):].strip()
+        elif line.startswith("detached") or line.startswith("prunable"):
+            # Detached HEAD and prunable markers are informational; keep parsing.
+            current[line.split()[0]] = True
         elif line.strip() == "":
             if current:
                 _maybe_add_lane(current, lanes, git_runner=git, timeout=timeout)
@@ -360,18 +420,27 @@ def _maybe_add_lane(
     timeout: float,
 ) -> None:
     branch = entry.get("branch") or ""
+    # Only real worktrees checked out on codex/* count. A detached entry has
+    # no branch line; a main-repo branch named codex/x that is not checked out
+    # in any worktree never appears in `worktree list --porcelain`.
     if not branch.startswith("codex/"):
         return
     wt = entry.get("worktree_path")
-    diff = collect_diff(wt, git_runner=git_runner, timeout=timeout) if wt else {
-        "changed_files": [],
-        "diffstat": "",
-    }
+    missing = not (wt and Path(wt).is_dir())
+    if missing:
+        diff: dict[str, Any] = {
+            "changed_files": [],
+            "diffstat": "",
+            "ok": False,
+        }
+    else:
+        diff = collect_diff(wt, git_runner=git_runner, timeout=timeout)
     lanes.append({
         "lane": branch,
         "branch": branch,
         "worktree_path": wt,
         "head": entry.get("head"),
+        "worktree_missing": missing,
         "changed_files": diff.get("changed_files") or [],
         "changed_file_count": len(diff.get("changed_files") or []),
         "diffstat": diff.get("diffstat") or "",

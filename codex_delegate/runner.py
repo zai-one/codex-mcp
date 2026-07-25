@@ -164,6 +164,9 @@ def run_delegation(
         bin_v = validate_codex_bin(codex_bin, from_client=False)
         wt = Path(worktree)
 
+        # Temp files live in the process temp dir (not the worktree) so they
+        # never pollute the lane diff. Track the path *before* any write so a
+        # mid-write exception still unlinks in ``finally``.
         fd, tmp_name = tempfile.mkstemp(prefix="codex-delegate-last-", suffix=".txt")
         os.close(fd)
         last_message_file = Path(tmp_name)
@@ -171,9 +174,17 @@ def run_delegation(
         schema_path: Optional[str] = None
         if schema_json is not None:
             sfd, sname = tempfile.mkstemp(prefix="codex-delegate-schema-", suffix=".json")
-            with os.fdopen(sfd, "w", encoding="utf-8") as sf:
-                sf.write(schema_json)
             schema_file = Path(sname)
+            try:
+                with os.fdopen(sfd, "w", encoding="utf-8") as sf:
+                    sf.write(schema_json)
+            except BaseException:
+                # fdopen owns the fd only on success; if it failed, close sfd.
+                try:
+                    os.close(sfd)
+                except OSError:
+                    pass
+                raise
             schema_path = str(schema_file)
 
         argv = build_exec_argv(
@@ -296,14 +307,64 @@ def delegate(
     """Full delegation: prepare worktree → run → collect diff (always)."""
     try:
         from .guard import normalize_lane
+        from .lane_lock import lane_run_scope
     except ImportError:  # pragma: no cover
         from guard import normalize_lane
+        from lane_lock import lane_run_scope
 
     try:
         lane_n = normalize_lane(lane)
     except GuardError as exc:
         return structured_error(exc.code, exc.message)
 
+    with lane_run_scope(repo_root, lane_n) as busy:
+        if busy is not None:
+            return busy
+        return _delegate_locked(
+            goal=goal,
+            lane_n=lane_n,
+            repo_root=repo_root,
+            base_ref=base_ref,
+            lanes_parent=lanes_parent,
+            codex_bin=codex_bin,
+            sandbox=sandbox,
+            plan_only=plan_only,
+            model=model,
+            reasoning_effort=reasoning_effort,
+            output_schema=output_schema,
+            ignore_user_config=ignore_user_config,
+            ephemeral=ephemeral,
+            resume=resume,
+            timeout_seconds=timeout_seconds,
+            git_runner=git_runner,
+            subprocess_runner=subprocess_runner,
+            which=which,
+            require_clean_base=require_clean_base,
+        )
+
+
+def _delegate_locked(
+    *,
+    goal: str,
+    lane_n: str,
+    repo_root: Path | str,
+    base_ref: str,
+    lanes_parent: Optional[Path | str],
+    codex_bin: str,
+    sandbox: Optional[str],
+    plan_only: bool,
+    model: Optional[str],
+    reasoning_effort: Optional[str],
+    output_schema: Any,
+    ignore_user_config: bool,
+    ephemeral: bool,
+    resume: Any,
+    timeout_seconds: Optional[float],
+    git_runner: Optional[GitRunner],
+    subprocess_runner: Optional[SubprocessRunner],
+    which: Optional[WhichFn],
+    require_clean_base: bool,
+) -> dict[str, Any]:
     prep = prepare_worktree(
         repo_root=repo_root,
         lane=lane_n,
