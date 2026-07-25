@@ -56,6 +56,74 @@ directory is the process cwd and its sandbox is the Codex default.
 
 `codex exec resume [SESSION_ID] [PROMPT]` extra flags: `--last`, `--all`.
 
+## Sub-command flag sets (authoritative for codex_delegate)
+
+These sets were transcribed from live rejections / help of **codex-cli 0.144.1** and are
+mirrored in `codex_delegate/cli_contract.py`. **Do not invent flags outside these sets.**
+
+### `codex exec` (plain)
+
+Accepted (from `codex exec --help`):
+`-c/--config`, `--enable`, `--disable`, `--strict-config`, `-i/--image`, `-m/--model`,
+`--oss`, `--local-provider`, `-p/--profile`, `-s/--sandbox`,
+`--dangerously-bypass-approvals-and-sandbox`, `--dangerously-bypass-hook-trust`,
+`-C/--cd`, `--add-dir`, `--skip-git-repo-check`, `--ephemeral`, `--ignore-user-config`,
+`--ignore-rules`, `--output-schema`, `--color`, `--json`, `-o/--output-last-message`,
+`-h/--help`.
+
+### `codex exec resume` — NO `--cd`, NO `-s/--sandbox`
+
+Reproduction (2026-07-25, integrator):
+
+```
+$ codex exec resume 00000000-0000-0000-0000-000000000000 --cd . -s read-only --json -o z.txt -
+error: unexpected argument '--cd' found
+  tip: to pass '--cd' as a value, use '-- --cd'
+Usage: codex exec resume <SESSION_ID> [PROMPT]
+```
+
+Accepted option set of `codex exec resume` is exactly:
+`-c/--config`, `--last`, `--all`, `--enable`, `--disable`, `-i/--image`, `--strict-config`,
+`-m/--model`, `--dangerously-bypass-approvals-and-sandbox`, `--dangerously-bypass-hook-trust`,
+`--skip-git-repo-check`, `--ephemeral`, `--ignore-user-config`, `--ignore-rules`,
+`--output-schema`, `--json`, `-o/--output-last-message`, `-h/--help`.
+
+**Security consequence:** because resume cannot take `-s`, a resumed session runs under the
+Codex **default** sandbox, not one the caller selected. `codex_delegate` therefore
+**fail-closes** resume (`RESUME_UNSUPPORTED`) and does not emit `exec resume` at all.
+
+### `codex exec review` — NO `--cd`, NO `-s/--sandbox`, NO `--color`
+
+Reproduction (2026-07-25, integrator):
+
+```
+$ codex exec review --color never --json -
+error: unexpected argument '--color' found
+```
+
+Accepted option set of `codex exec review` is exactly:
+`-c/--config`, `--uncommitted`, `--base <BRANCH>`, `--enable`, `--commit <SHA>`, `--disable`,
+`--strict-config`, `--title <TITLE>`, `-m/--model`,
+`--dangerously-bypass-approvals-and-sandbox`, `--dangerously-bypass-hook-trust`,
+`--skip-git-repo-check`, `--ephemeral`, `--ignore-user-config`, `--ignore-rules`,
+`--output-schema`, `--json`, `-o/--output-last-message`, `-h/--help`.
+
+Working directory is the process cwd; sandbox is the Codex default (probe A: read-only).
+
+### `codex doctor --json` hang (bounded by package)
+
+Measured with stdin already at `DEVNULL` (so this is not a stdin-inheritance artefact):
+
+```
+['--version']      rc 0 in 0.3s
+['login','status'] rc 0 in 0.3s
+['doctor','--json'] TIMEOUT after 277.7s
+```
+
+`codex doctor --json` can hang for minutes. `codex_delegate` bounds the probe with
+`DOCTOR_TIMEOUT_SECONDS` (≤ 60s) and returns structured `DOCTOR_TIMEOUT` on expiry.
+Do not raise this bound without a new live measurement.
+
 ## Sandbox behaviour — measured, not assumed
 
 Probe A — `codex exec --cd <repo> -m gpt-5.4-mini --ignore-user-config --json -o a.txt -`,
