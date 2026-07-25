@@ -63,6 +63,7 @@ dual-import, прогнано из чужого рабочего каталог�
 | `CODEX_DELEGATE_REASONING_EFFORT` | effort | — |
 | `CODEX_DELEGATE_TIMEOUT_SECONDS` | таймаут | `900` (cap `3600`) |
 | `CODEX_DELEGATE_IGNORE_USER_CONFIG` | `--ignore-user-config` | **вкл.** |
+| `CODEX_DELEGATE_SELF_TEST_FAIL_ON_SKIP` | `--self-test` падает при любом SKIP | выкл. |
 
 ### Зачем `--ignore-user-config` по умолчанию
 
@@ -109,7 +110,9 @@ infra-инструментов и desktop-доступа. Auth по-прежне
   kill дерева процессов (`taskkill /F /T` на Windows, `killpg` на POSIX);
   после фикса замер — **45.2s**. В `--self-test` эта строка отображается как
   `SKIP`, а не `PASS`: отказ вендорского бинарника не выдаётся за здоровье, но
-  и не объявляет сломанным наш сервер.
+  и не объявляет сломанным наш сервер. `RESULT: PASS` требует хотя бы один
+  реальный PASS (полный SKIP-прогон — `FAIL`). CI без пропусков:
+  `CODEX_DELEGATE_SELF_TEST_FAIL_ON_SKIP=1`.
 
 ## Не-цели и жёсткие границы
 
@@ -126,8 +129,11 @@ tests/              # pytest, полностью замокан
 CODEX-CLI-FACTS.md  # единственный источник флагов CLI
 GOAL-ROUND1.md      # спецификация раунда 1
 GOAL-ROUND2-SKEPTIC.md  # skeptic-находки R1..R11
+GOAL-ROUND4-SKEPTIC-DELTA.md  # skeptic по дельте интегратора
 EVIDENCE-ROUND1.md  # что проверено в r1
 EVIDENCE-ROUND2.md  # skeptic-pass и фиксы
+EVIDENCE-ROUND3-INTEGRATOR.md  # гейты/замеры интегратора
+EVIDENCE-ROUND4.md  # skeptic-pass по дельте D1..D4
 ```
 
 Подробный контракт пакета: [`codex_delegate/README.md`](codex_delegate/README.md).

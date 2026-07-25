@@ -8,7 +8,7 @@ import shutil
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 
 try:
     from .server import (
@@ -45,7 +45,19 @@ def _row(name: str, ok: bool, detail: str = "", *, skipped: bool = False) -> dic
 # SKIP: never PASS (R5 — a tool with ok:false must not read as healthy), but they
 # do not condemn our own wiring either. `codex doctor --json` does not return on
 # this host; the bound is enforced by us and the tool degrades honestly.
+#
+# Audit vs self-test (R5 invariant, deliberately asymmetric audiences):
+#   - audit line for the same call records outcome: "error" because the tool
+#     returned ok:false — the MCP call did not succeed.
+#   - self-test table prints SKIP because the failure is vendor-side and must
+#     not paint *our* wiring as broken.
+# That is not the R5 defect (which was ok:false printed as PASS). Audit says
+# "the call failed"; the table says "not our bug". Both are true.
 VENDOR_SKIP_ERROR_CODES = frozenset({"DOCTOR_TIMEOUT"})
+
+# CI that needs "nothing was skipped" can set this. Default keeps the measured
+# integrator behaviour: PASS (1 skipped) exits 0 when real probes still pass.
+_ENV_FAIL_ON_SKIP = "CODEX_DELEGATE_SELF_TEST_FAIL_ON_SKIP"
 
 
 def self_test_tool_row(name: str, result: Mapping[str, Any]) -> dict[str, Any]:
@@ -53,9 +65,11 @@ def self_test_tool_row(name: str, result: Mapping[str, Any]) -> dict[str, Any]:
 
     A tool that returned ``ok: false`` MUST NOT produce a PASS row. Audit
     ``outcome`` and the self-test verdict for the same call must never
-    disagree (R5). A vendor-side unresponsiveness listed in
-    ``VENDOR_SKIP_ERROR_CODES`` yields SKIP, which is reported but does not
-    fail the run.
+    disagree about health (R5): ``ok:false`` is never PASS. A vendor-side
+    unresponsiveness listed in ``VENDOR_SKIP_ERROR_CODES`` yields SKIP
+    (``ok:false, skipped:true``), which is reported but does not fail the
+    run unless every row was skipped or ``CODEX_DELEGATE_SELF_TEST_FAIL_ON_SKIP``
+    is set.
     """
     ok = bool(result.get("ok"))
     if ok:
@@ -71,8 +85,53 @@ def self_test_tool_row(name: str, result: Mapping[str, Any]) -> dict[str, Any]:
     return _row(name, False, detail)
 
 
+def evaluate_self_test_rows(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    fail_on_skip: bool = False,
+) -> tuple[int, str, int, int, int]:
+    """Compute exit code + RESULT line for a finished self-test table.
+
+    Returns ``(exit_code, result_line, passed, failed, skipped)``.
+
+    SKIP is not a disguised PASS:
+    - a row with ``ok:false`` is never counted as passed (R5);
+    - RESULT is PASS only when there is **at least one real PASS** and zero
+      FAILs — a total-skip run (nothing verified) is FAIL, otherwise SKIP
+      would reintroduce R5 by another door;
+    - ``fail_on_skip=True`` (env ``CODEX_DELEGATE_SELF_TEST_FAIL_ON_SKIP``)
+      makes any skip fail the run for CI that demands a fully green table.
+    """
+    passed = 0
+    failed = 0
+    skipped = 0
+    for r in rows:
+        if r.get("ok"):
+            passed += 1
+        elif r.get("skipped"):
+            skipped += 1
+        else:
+            failed += 1
+
+    suffix = f" ({skipped} skipped)" if skipped else ""
+    if failed > 0:
+        return 1, f"RESULT: FAIL{suffix}", passed, failed, skipped
+    if passed == 0:
+        # Zero PASS + zero FAIL ⇒ everything was SKIP (or the table was empty).
+        # That must not read as healthy.
+        return 1, f"RESULT: FAIL{suffix}", passed, failed, skipped
+    if fail_on_skip and skipped > 0:
+        return 1, f"RESULT: FAIL{suffix}", passed, failed, skipped
+    return 0, f"RESULT: PASS{suffix}", passed, failed, skipped
+
+
+def _env_flag_truthy(name: str) -> bool:
+    raw = (os.environ.get(name) or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def run_self_test() -> int:
-    """PASS/FAIL table without real delegation."""
+    """PASS/FAIL/SKIP table without real delegation."""
     rows: list[dict[str, Any]] = []
 
     # Binary / version
@@ -144,23 +203,22 @@ def run_self_test() -> int:
 
     # print table
     width = max(len(r["name"]) for r in rows)
-    failed = 0
-    skipped = 0
     for r in rows:
         if r["ok"]:
             flag = "PASS"
         elif r.get("skipped"):
             flag = "SKIP"
-            skipped += 1
         else:
             flag = "FAIL"
-            failed += 1
         print(f"{r['name']:<{width}}  {flag}  {r['detail']}")
 
     print()
-    suffix = f" ({skipped} skipped)" if skipped else ""
-    print(f"RESULT: {'PASS' if failed == 0 else 'FAIL'}{suffix}")
-    return 0 if failed == 0 else 1
+    exit_code, result_line, _passed, _failed, _skipped = evaluate_self_test_rows(
+        rows,
+        fail_on_skip=_env_flag_truthy(_ENV_FAIL_ON_SKIP),
+    )
+    print(result_line)
+    return exit_code
 
 
 def _noop_git_runner(args, cwd, timeout):  # type: ignore[no-untyped-def]

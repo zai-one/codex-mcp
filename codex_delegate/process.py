@@ -92,6 +92,15 @@ def reject_forbidden_flags(args: Sequence[str]) -> None:
             raise GuardError("ARGV_FORBIDDEN_FLAG", f"forbidden flag: {tok}")
 
 
+def _as_text(chunk: Any) -> str:
+    """Normalise TimeoutExpired partial output (str / bytes / None) to str."""
+    if chunk is None:
+        return ""
+    if isinstance(chunk, bytes):
+        return chunk.decode("utf-8", errors="replace")
+    return str(chunk)
+
+
 def kill_process_tree(proc: "subprocess.Popen[Any]") -> None:
     """Kill the child **and its descendants**.
 
@@ -101,9 +110,18 @@ def kill_process_tree(proc: "subprocess.Popen[Any]") -> None:
     bound on ``codex doctor --json`` produced 240s of wall clock, because the
     grandchildren kept the pipes open. A declared timeout that does not bound
     wall clock is not a timeout.
+
+    PID-reuse window (cannot be closed from userland): between the moment the
+    child exits and our ``taskkill`` / ``killpg`` lands, the OS may reassign
+    that PID to an unrelated process. We accept the race; both branches are
+    best-effort and fall back to ``proc.kill()`` on the original handle, which
+    is safe if the original child is already reaped.
     """
     try:
         if os.name == "nt":
+            # taskkill may be absent on stripped hosts (FileNotFoundError) or
+            # return non-zero against an already-dead PID — both are swallowed.
+            # /T = tree; without it we reintroduce the 240s grandchild hang.
             subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(proc.pid)],
                 capture_output=True,
@@ -112,7 +130,18 @@ def kill_process_tree(proc: "subprocess.Popen[Any]") -> None:
                 stdin=subprocess.DEVNULL,
             )
         else:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            # start_new_session=True at spawn puts the child in its own group.
+            # If that ever regresses, getpgid(child) == getpgrp() and killpg
+            # would signal *our* group — including the MCP server. Refuse.
+            try:
+                child_pgid = os.getpgid(proc.pid)
+            except (ProcessLookupError, PermissionError, OSError):
+                child_pgid = None
+            if child_pgid is None or child_pgid == os.getpgrp():
+                # Fall through to proc.kill() below — never self-kill.
+                pass
+            else:
+                os.killpg(child_pgid, signal.SIGKILL)
     except Exception:  # noqa: BLE001 — best effort; proc.kill() below is the fallback
         pass
     try:
@@ -133,6 +162,11 @@ def run_bounded(
     stdin is ``DEVNULL`` unless ``input_text`` is supplied: the MCP server's
     stdin is the JSON-RPC channel, and a child that reads it can corrupt or
     deadlock the session.
+
+    All I/O goes through ``Popen.communicate()`` — never a bare
+    ``stdin.write`` + pipe read — so a 60_000-char goal or a large JSONL
+    stream cannot fill an OS pipe buffer and deadlock us. There is no path
+    that mixes raw pipe I/O with a timeout.
     """
     argv = [str(a) for a in cmd]
     popen_kwargs: dict[str, Any] = {
@@ -144,28 +178,42 @@ def run_bounded(
         "errors": "replace",
     }
     if os.name != "nt":
-        # Own process group so killpg reaches descendants.
+        # Own process group so killpg reaches descendants without touching us.
         popen_kwargs["start_new_session"] = True
 
     try:
         proc = subprocess.Popen(argv, **popen_kwargs)  # noqa: S603
     except FileNotFoundError:
+        # Only FileNotFoundError maps to missing=True (CODEX_MISSING / git-not-found).
+        # PermissionError / NotADirectoryError / OSError from a present-but-unlaunchable
+        # binary (or a bad cwd) propagate to the caller — same as pre-Popen semantics.
         return result_dict(argv, 127, "", f"binary not found: {argv[0] if argv else '?'}", missing=True)
 
     try:
         stdout, stderr = proc.communicate(input=input_text, timeout=timeout)
         return result_dict(argv, proc.returncode, stdout or "", stderr or "")
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as first_exc:
         kill_process_tree(proc)
         try:
+            # Second drain: first communicate() may already have consumed part of
+            # the stream into first_exc.stdout/stderr; retrying does not lose it
+            # (CPython contract). Callers that key on timedOut (doctor → DOCTOR_TIMEOUT,
+            # delegate → status=timeout) never treat partial JSONL as success.
+            # parse_event_stream turns a half-line into unparsed_lines += 1 and
+            # never raises; half a doctor JSON body fails json.loads → text_preview.
             stdout, stderr = proc.communicate(timeout=TREE_KILL_GRACE_SECONDS)
-        except subprocess.TimeoutExpired:
-            # Pipes are still held by something we could not reach. Abandon them
-            # rather than block the caller past its own bound.
-            stdout, stderr = "", ""
-        return result_dict(
-            argv, 124, stdout or "", stderr or f"timed out after {timeout}s", timed_out=True
-        )
+        except subprocess.TimeoutExpired as second_exc:
+            # Pipes still held by something we could not reach. Prefer any partial
+            # bytes already collected, then abandon rather than block past the bound.
+            stdout = _as_text(second_exc.stdout) or _as_text(first_exc.stdout)
+            stderr = _as_text(second_exc.stderr) or _as_text(first_exc.stderr)
+        timeout_msg = f"timed out after {timeout}s"
+        err = (stderr or "").rstrip()
+        if err:
+            err = f"{err}\n{timeout_msg}"
+        else:
+            err = timeout_msg
+        return result_dict(argv, 124, stdout or "", err, timed_out=True)
 
 
 def default_git_runner(
@@ -177,6 +225,9 @@ def default_git_runner(
     reject_forbidden_git_args(args)
     result = run_bounded(["git", *[str(a) for a in args]], cwd, timeout)
     if result.get("missing"):
+        # missing=True is only set on FileNotFoundError, whose stderr is the
+        # generic "binary not found: git". Replace with the stable probe string
+        # callers already match on; no richer diagnostic is lost on this path.
         result["stderr"] = "git not found"
     return result
 
