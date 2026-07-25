@@ -124,6 +124,49 @@ Measured with stdin already at `DEVNULL` (so this is not a stdin-inheritance art
 `DOCTOR_TIMEOUT_SECONDS` (≤ 60s) and returns structured `DOCTOR_TIMEOUT` on expiry.
 Do not raise this bound without a new live measurement.
 
+## `-s workspace-write` is NOT reliable on this host (2026-07-25, integrator)
+
+Probe C below did grant writes earlier the same day. Hours later, on the **same** `codex-cli
+0.144.1`, **the same command shape, in the same directory**, every write is refused:
+
+```
+$ echo "Create a file dprobe.md containing exactly OK, then reply DONE." \
+  | codex exec --cd . -s workspace-write -m gpt-5.4-mini --ignore-user-config --json -o od.log -
+"text":"I can't create `dprobe.md` in this workspace because the filesystem is read-only."
+# dprobe.md: No such file or directory
+```
+
+Reproduced in three settings: a plain `git init` repo, a **linked git worktree** (what this
+package creates), and with `--cd` equal to / different from the process cwd. All read-only.
+
+The flag does reach the policy handed to the model — this is not an argv bug on our side:
+
+```
+$ codex -s workspace-write debug prompt-input
+"<permissions instructions>\nFilesystem sandboxing defines which files can be read or written.
+ `sandbox_mode` is `workspace-write`: The sandbox permits reading files, and editing files in
+ `cwd` and `writable_roots`. …"
+```
+
+Correlating signal — the Windows sandbox feature flags are retired in this build:
+
+```
+$ codex features list | grep -iE "sandbox|windows"
+elevated_windows_sandbox             removed            false
+experimental_windows_sandbox         removed            false
+use_linux_sandbox_bwrap              removed            false
+```
+
+Consistent reading: when Codex cannot establish a write-capable sandbox on Windows it degrades to
+read-only rather than running unsandboxed. **Why probe C succeeded earlier is not explained** — do
+not invent a story for it; treat write capability as something to re-verify per session.
+
+Consequence for `codex_delegate`: the read-only tools (`_plan`, `_review`, `_status`, `_models`,
+`_lanes`) work; the **execute** path cannot produce changes while this holds. `delegate()` now
+reports that honestly instead of returning `ok:true` with an empty diff — see
+`EXECUTE_NO_CHANGES`. The only flag that would bypass the sandbox is
+`--dangerously-bypass-approvals-and-sandbox`, which this package forbids everywhere.
+
 ## Sandbox behaviour — measured, not assumed
 
 Probe A — `codex exec --cd <repo> -m gpt-5.4-mini --ignore-user-config --json -o a.txt -`,

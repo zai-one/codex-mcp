@@ -828,6 +828,75 @@ class TestDelegateDiffOnFailure:
         assert "new.txt" in result["changed_files"] or result["diffstat"] != "" or isinstance(result["changed_files"], list)
 
 
+class TestExecuteLaneMustProduceChanges:
+    """Measured regression: `-s workspace-write` requested, every write refused by
+    the Codex sandbox ("the filesystem is read-only"), process exited 0 and the
+    event stream completed a turn — and delegate() reported ok:true with an empty
+    diff. An execute lane that changed nothing did not do its job.
+    """
+
+    @staticmethod
+    def _run(
+        tmp_path: Path,
+        *,
+        porcelain: str,
+        plan_only: bool,
+        stream: str = PROBE_A_REFUSAL_STREAM,
+    ) -> dict[str, Any]:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lanes = tmp_path / "lanes"
+
+        def worktree_add(tokens: list[str], cwd: Any, timeout: float) -> dict[str, Any]:
+            bi = tokens.index("-b")
+            Path(tokens[bi + 2]).mkdir(parents=True, exist_ok=True)
+            return _git_ok()
+
+        git = ScriptedGit({
+            "--version": _git_ok("git version 2.40.0"),
+            "rev-parse --verify": _git_ok("abc"),
+            "status --porcelain": lambda tokens, cwd, timeout: (
+                _git_ok("") if str(cwd) == str(repo) else _git_ok(porcelain)
+            ),
+            "worktree add": worktree_add,
+            "diff --name-only": _git_ok(""),
+            "diff --stat": _git_ok(""),
+        })
+        return delegate(
+            goal="edit a file please",
+            lane="feat",
+            repo_root=repo,
+            lanes_parent=lanes,
+            git_runner=git,
+            subprocess_runner=CapturingSubprocess(_proc(stdout=stream, returncode=0)),
+            which=lambda n: "codex",
+            timeout_seconds=60.0,
+            plan_only=plan_only,
+            sandbox=None if plan_only else "workspace-write",
+        )
+
+    def test_execute_with_zero_changes_is_not_ok(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, porcelain="", plan_only=False)
+        assert result["ok"] is False, "an execute lane that changed nothing must not report success"
+        assert result["status"] == "no_changes"
+        assert result["error"] == "EXECUTE_NO_CHANGES"
+        # The executor's own account must survive so the operator can see why.
+        assert "summary" in result
+
+    def test_execute_with_changes_is_ok(self, tmp_path: Path) -> None:
+        result = self._run(tmp_path, porcelain="?? new.txt", plan_only=False, stream=SAMPLE_STREAM)
+        assert result["ok"] is True
+        assert result["status"] == "ok"
+        assert "new.txt" in result["changed_files"]
+
+    def test_plan_lane_with_zero_changes_stays_ok(self, tmp_path: Path) -> None:
+        """plan_only is exempt — producing no changes is its whole point."""
+        result = self._run(tmp_path, porcelain="", plan_only=True)
+        assert result["ok"] is True
+        assert result["status"] == "ok"
+        assert result["changed_files"] == []
+
+
 # ===========================================================================
 # 13. Root allowlist
 # ===========================================================================

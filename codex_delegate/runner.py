@@ -333,19 +333,46 @@ def delegate(
         which=which,
     )
     diff = collect_diff(wt_path, git_runner=git_runner)
+    changed = diff.get("changed_files") or []
+
+    run_ok = bool(run_result.get("ok"))
+    status = run_result.get("status") or ("ok" if run_ok else "error")
+
+    # An execute lane exists to produce changes. Zero changed files means the
+    # delegation did not do its job, even when the process exited 0 and the
+    # event stream completed a turn — measured case: Codex refused every write
+    # ("the filesystem is read-only") while `-s workspace-write` was requested,
+    # and the run still read as ok:true with an empty diff. Structural signal
+    # only; we do not pattern-match the agent's prose. Read-only work belongs to
+    # codex_delegate_plan, which is exempt from this rule.
+    no_changes = run_ok and not plan_only and not changed
+    if no_changes:
+        run_ok = False
+        status = "no_changes"
 
     out: dict[str, Any] = {
-        "ok": bool(run_result.get("ok")),
+        "ok": run_ok,
         "lane": lane_n,
         "branch": prep.get("branch"),
         "worktree_path": wt_path,
-        "status": run_result.get("status") or ("error" if not run_result.get("ok") else "ok"),
+        "status": status,
         "summary": run_result.get("summary"),
         "thread_id": run_result.get("thread_id"),
         "usage": run_result.get("usage"),
-        "changed_files": diff.get("changed_files") or [],
+        "changed_files": changed,
         "diffstat": diff.get("diffstat") or "",
     }
+    if no_changes:
+        out["error"] = "EXECUTE_NO_CHANGES"
+        out["message"] = (
+            "execute lane finished without changing any file; read the summary for the "
+            "executor's own account (a sandbox refusal reports itself there). Use "
+            "codex_delegate_plan for work that is not supposed to write."
+        )
+        for key in ("errors", "returncode", "elapsed_seconds", "sandbox", "plan_only", "commands"):
+            if key in run_result:
+                out[key] = run_result[key]
+        return out
     if not out["ok"]:
         out["error"] = run_result.get("error") or "EXEC_FAILED"
         out["message"] = run_result.get("message") or "delegation failed"
