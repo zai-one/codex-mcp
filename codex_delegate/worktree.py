@@ -135,8 +135,14 @@ def prepare_worktree(
     * On failure after a successful ``worktree add``, the directory may still
       exist — that is intentional operator evidence, not garbage to auto-delete.
       A later call with the same lane reuses it when HEAD matches.
-    * Concurrent callers for the same repo are serialised via ``repo_git_lock``
-      so two ``worktree add`` races cannot corrupt the registry.
+    * Concurrent callers **inside this process** are serialised via
+      ``repo_git_lock``. That is the whole extent of the guarantee: the lock is
+      a ``threading.Lock`` in a module-level dict, so a second server process,
+      or a script run alongside a live server, shares no state with us and can
+      still race ``git worktree add`` on the same repository. Do not restate
+      this as "worktree races cannot corrupt the registry" — closing the
+      cross-process case needs an on-disk lock, which is a separate decision
+      (stale locks after a crash are their own failure mode).
     * Never pushes, merges, or deletes worktrees.
     """
     git = git_runner or default_git_runner

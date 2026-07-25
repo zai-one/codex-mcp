@@ -6,6 +6,7 @@ import io
 import json
 import os
 import subprocess
+import threading
 import uuid
 from pathlib import Path
 from typing import Any, Optional, Sequence
@@ -57,6 +58,7 @@ from codex_delegate.guard import (
     validate_session_id,
     validate_timeout,
 )
+from codex_delegate import lane_lock
 from codex_delegate.lane_lock import reset_locks_for_tests, try_acquire_lane, release_lane
 from codex_delegate.runner import (
     collect_diff,
@@ -2414,6 +2416,40 @@ class TestPathsWithSpaces:
         # Path is one argv token — not split on spaces.
         joined = " ".join(seen[0])
         assert "Codex CLI" in joined or str(lanes) in joined
+
+
+class TestLaneLockScopeIsProcessLocal:
+    """Pin the *extent* of the concurrency guarantee so nobody widens it in prose.
+
+    `_active_lanes` and `_repo_locks` are module-level, so serialisation covers
+    callers inside one process and nothing more. A second server process, or a
+    script run alongside a live server, shares no state and can still race
+    `git worktree add`. Closing that needs an on-disk lock — a separate decision
+    with its own failure mode (stale locks after a crash).
+    """
+
+    def test_same_lane_is_refused_within_one_process(self) -> None:
+        lane_lock.reset_locks_for_tests()
+        assert lane_lock.try_acquire_lane(r"C:\Repo A", "codex/x") is None
+        second = lane_lock.try_acquire_lane(r"C:\Repo A", "codex/x")
+        assert (second or {}).get("error") == "LANE_BUSY"
+
+    def test_guarantee_does_not_survive_a_fresh_process(self) -> None:
+        lane_lock.reset_locks_for_tests()
+        assert lane_lock.try_acquire_lane(r"C:\Repo A", "codex/x") is None
+        # reset_locks_for_tests() models the state a *new* process starts with:
+        # empty. The lane is instantly acquirable again while the first holder
+        # is still notionally running — that is the documented hole, asserted so
+        # the docs cannot quietly claim cross-process protection.
+        lane_lock.reset_locks_for_tests()
+        assert lane_lock.try_acquire_lane(r"C:\Repo A", "codex/x") is None
+
+    def test_repo_git_lock_is_an_in_process_mutex(self) -> None:
+        lane_lock.reset_locks_for_tests()
+        a = lane_lock.repo_git_lock(r"C:\Repo A")
+        b = lane_lock.repo_git_lock("c:/repo a")  # same repo, different spelling
+        assert a is b, "case/slash variants must map to one mutex"
+        assert isinstance(a, threading.Lock().__class__)
 
 
 class TestConcurrencyLaneBusy:
