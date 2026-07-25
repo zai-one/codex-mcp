@@ -76,8 +76,14 @@ from codex_delegate.server import (
 from codex_delegate.status import run_doctor_json
 from codex_delegate.__main__ import (
     SMOKE_SENTINEL,
+    evaluate_self_test_rows,
     evaluate_smoke_result,
     self_test_tool_row,
+)
+from codex_delegate.process import (
+    TREE_KILL_GRACE_SECONDS,
+    kill_process_tree,
+    run_bounded,
 )
 from codex_delegate import events as events_mod
 from codex_delegate import process as process_mod
@@ -1312,9 +1318,22 @@ class TestDoctorTimeout:
 # R4 — stdin never inherited
 # ===========================================================================
 
-def _fake_popen(*, returncode: int = 0, stdout: str = "", stderr: str = "", hang: bool = False):
-    """Build a Popen double that records the kwargs it was constructed with."""
-    seen: dict[str, Any] = {}
+def _fake_popen(
+    *,
+    returncode: int = 0,
+    stdout: str = "",
+    stderr: str = "",
+    hang: bool = False,
+    hang_forever: bool = False,
+    partial_on_timeout: Optional[tuple[str, str]] = None,
+):
+    """Build a Popen double that records the kwargs it was constructed with.
+
+    ``hang=True``: first ``communicate`` raises TimeoutExpired, second returns
+    (stdout, stderr) — models a successful post-kill drain.
+    ``hang_forever=True``: every ``communicate`` raises — models abandoned pipes.
+    """
+    seen: dict[str, Any] = {"communicate_calls": 0, "communicate_timeouts": []}
 
     class _Proc:
         pid = 4242
@@ -1326,16 +1345,22 @@ def _fake_popen(*, returncode: int = 0, stdout: str = "", stderr: str = "", hang
         def communicate(self, input=None, timeout=None):  # noqa: A002
             seen["input"] = input
             seen["communicate_timeout"] = timeout
-            if hang and not self._drained:
+            seen["communicate_calls"] = int(seen["communicate_calls"]) + 1
+            seen["communicate_timeouts"].append(timeout)
+            if hang_forever or (hang and not self._drained):
                 self._drained = True
-                raise subprocess.TimeoutExpired(cmd="x", timeout=timeout or 0)
+                exc = subprocess.TimeoutExpired(cmd="x", timeout=timeout or 0)
+                if partial_on_timeout is not None:
+                    exc.stdout, exc.stderr = partial_on_timeout
+                raise exc
             return stdout, stderr
 
         def kill(self) -> None:
             seen["killed"] = True
 
         def poll(self):
-            return None if hang else returncode
+            # kill_process_tree does not consult poll(); kept for Popen fidelity.
+            return None if (hang or hang_forever) else returncode
 
     def _factory(argv, **kwargs):
         seen.update(kwargs)
@@ -1350,8 +1375,10 @@ class TestStdinIsolation:
         factory, seen = _fake_popen()
         with mock.patch("codex_delegate.process.subprocess.Popen", factory):
             default_subprocess_runner(["codex", "--version"], None, 5.0, input_text=None)
+        # R4 security property: must be the DEVNULL singleton, not None/PIPE/inherit.
         assert seen["stdin"] is subprocess.DEVNULL
         assert seen["input"] is None
+        assert "stdin" in seen, "stdin kwarg must be passed explicitly (no inheritance)"
 
     def test_subprocess_runner_input_when_provided(self) -> None:
         factory, seen = _fake_popen()
@@ -1371,6 +1398,15 @@ class TestStdinIsolation:
             default_git_runner(["--version"], None, 5.0)
         assert seen["stdin"] is subprocess.DEVNULL
 
+    def test_removing_devnull_would_fail(self) -> None:
+        """Theatre guard: assert exact DEVNULL object identity, not merely 'stdin set'."""
+        factory, seen = _fake_popen()
+        with mock.patch("codex_delegate.process.subprocess.Popen", factory):
+            run_bounded(["codex", "--version"], None, 5.0, input_text=None)
+        assert seen["stdin"] is not None
+        assert seen["stdin"] is not subprocess.PIPE
+        assert seen["stdin"] is subprocess.DEVNULL
+
 
 # ===========================================================================
 # R3b — a declared timeout must bound wall clock, not just the direct child
@@ -1387,6 +1423,8 @@ class TestTimeoutKillsProcessTree:
         assert result["timedOut"] is True
         assert result["returncode"] == 124
         assert killed == [4242], "the process tree must be killed, not only the direct child"
+        # If run_bounded returned before killing, killed would be empty — not theatre.
+        assert seen["communicate_calls"] >= 1
 
     def test_tree_kill_targets_descendants(self) -> None:
         """On Windows the kill must be /T (tree); elsewhere it must be killpg."""
@@ -1400,30 +1438,179 @@ class TestTimeoutKillsProcessTree:
                 assert argv[:3] == ["taskkill", "/F", "/T"]
                 assert str(proc.pid) in argv
         else:  # pragma: no cover - POSIX branch
-            with mock.patch("codex_delegate.process.os.killpg") as killpg:
+            with mock.patch("codex_delegate.process.os.killpg") as killpg, \
+                 mock.patch("codex_delegate.process.os.getpgid", return_value=9999), \
+                 mock.patch("codex_delegate.process.os.getpgrp", return_value=1):
                 process_mod.kill_process_tree(proc)
                 assert killpg.called
+                assert killpg.call_args.args[0] == 9999
+
+    def test_posix_killpg_refuses_own_process_group(self) -> None:
+        """If start_new_session regressed, killpg must not signal our own group."""
+        class _Proc:
+            pid = 55
+
+            def kill(self) -> None:
+                self.killed = True  # type: ignore[attr-defined]
+
+        proc = _Proc()
+        # create=True: os.getpgid/getpgrp/killpg do not exist on Windows, but the
+        # property under test (never signal our own group) must be asserted on
+        # every host, not silently skipped on the one we develop on.
+        with mock.patch("codex_delegate.process.os.name", "posix"), \
+             mock.patch("codex_delegate.process.os.getpgid", return_value=100, create=True), \
+             mock.patch("codex_delegate.process.os.getpgrp", return_value=100, create=True), \
+             mock.patch("codex_delegate.process.os.killpg", create=True) as killpg:
+            kill_process_tree(proc)  # type: ignore[arg-type]
+        assert not killpg.called, "killpg on our own pgid would take down the MCP server"
+        assert getattr(proc, "killed", False) is True
+
+    def test_posix_killpg_signals_child_group_only(self) -> None:
+        class _Proc:
+            pid = 55
+
+            def kill(self) -> None:
+                self.killed = True  # type: ignore[attr-defined]
+
+        proc = _Proc()
+        with mock.patch("codex_delegate.process.os.name", "posix"), \
+             mock.patch("codex_delegate.process.os.getpgid", return_value=777, create=True), \
+             mock.patch("codex_delegate.process.os.getpgrp", return_value=100, create=True), \
+             mock.patch("codex_delegate.process.os.killpg", create=True) as killpg, \
+             mock.patch("codex_delegate.process.signal.SIGKILL", 9, create=True):
+            kill_process_tree(proc)  # type: ignore[arg-type]
+        killpg.assert_called_once_with(777, 9)
+
+    def test_taskkill_missing_falls_back_to_proc_kill(self) -> None:
+        """Stripped host without taskkill on PATH must not raise out of kill_process_tree."""
+        class _Proc:
+            pid = 9
+            killed = False
+
+            def kill(self) -> None:
+                self.killed = True
+
+        proc = _Proc()
+        with mock.patch("codex_delegate.process.os.name", "nt"), \
+             mock.patch(
+                 "codex_delegate.process.subprocess.run",
+                 side_effect=FileNotFoundError("taskkill"),
+             ):
+            kill_process_tree(proc)  # type: ignore[arg-type]
+        assert proc.killed is True
+
+    def test_taskkill_against_dead_pid_is_swallowed(self) -> None:
+        class _Proc:
+            pid = 9
+            killed = False
+
+            def kill(self) -> None:
+                self.killed = True
+
+        proc = _Proc()
+        completed = subprocess.CompletedProcess(
+            args=["taskkill"], returncode=128, stdout="", stderr="not found",
+        )
+        with mock.patch("codex_delegate.process.os.name", "nt"), \
+             mock.patch("codex_delegate.process.subprocess.run", return_value=completed):
+            kill_process_tree(proc)  # type: ignore[arg-type]
+        assert proc.killed is True
 
     def test_abandons_pipes_rather_than_blocking_forever(self) -> None:
         """If descendants still hold the pipes after the kill, do not block."""
-        class _Stuck:
-            pid = 7
-            returncode = 124
-
-            def communicate(self, input=None, timeout=None):  # noqa: A002
-                raise subprocess.TimeoutExpired(cmd="x", timeout=timeout or 0)
-
-            def kill(self) -> None:
-                pass
-
-            def poll(self):
-                return None
-
-        with mock.patch("codex_delegate.process.subprocess.Popen", lambda *a, **k: _Stuck()), \
-             mock.patch("codex_delegate.process.kill_process_tree"):
+        factory, seen = _fake_popen(hang_forever=True)
+        with mock.patch("codex_delegate.process.subprocess.Popen", factory), \
+             mock.patch("codex_delegate.process.kill_process_tree") as tree_kill:
             result = default_subprocess_runner(["codex", "doctor", "--json"], None, 1.0)
         assert result["timedOut"] is True
-        assert result["stdout"] == ""
+        assert result["returncode"] == 124
+        assert "timed out after" in result["stderr"]
+        assert tree_kill.called
+        # First communicate (bound) + second (grace) — both timed out.
+        assert seen["communicate_calls"] == 2
+        assert seen["communicate_timeouts"][0] == 1.0
+        assert seen["communicate_timeouts"][1] == TREE_KILL_GRACE_SECONDS
+
+    def test_partial_output_preserved_when_pipes_abandoned(self) -> None:
+        factory, _seen = _fake_popen(
+            hang_forever=True,
+            partial_on_timeout=("{partial", "warn"),
+        )
+        with mock.patch("codex_delegate.process.subprocess.Popen", factory), \
+             mock.patch("codex_delegate.process.kill_process_tree"):
+            result = run_bounded(["codex", "doctor", "--json"], None, 1.0)
+        assert result["timedOut"] is True
+        assert result["stdout"] == "{partial"
+        assert "warn" in result["stderr"]
+        assert "timed out after 1.0s" in result["stderr"]
+
+    def test_all_io_goes_through_communicate(self) -> None:
+        """No path may write stdin / read pipes without communicate (deadlock risk)."""
+        factory, seen = _fake_popen()
+        big_goal = "x" * 60_000
+        with mock.patch("codex_delegate.process.subprocess.Popen", factory):
+            run_bounded(
+                ["codex", "exec", "--json", "-"],
+                None,
+                5.0,
+                input_text=big_goal,
+            )
+        assert seen["stdin"] is subprocess.PIPE
+        assert seen["input"] == big_goal
+        assert seen["communicate_calls"] == 1
+        assert "stdout" in seen and seen["stdout"] is subprocess.PIPE
+        assert "stderr" in seen and seen["stderr"] is subprocess.PIPE
+
+    def test_posix_spawn_starts_new_session(self) -> None:
+        """killpg is only safe when the child is not in our process group."""
+        factory, seen = _fake_popen()
+        with mock.patch("codex_delegate.process.os.name", "posix"), \
+             mock.patch("codex_delegate.process.subprocess.Popen", factory):
+            run_bounded(["codex", "--version"], None, 5.0)
+        assert seen.get("start_new_session") is True
+
+    def test_windows_spawn_does_not_set_start_new_session(self) -> None:
+        factory, seen = _fake_popen()
+        with mock.patch("codex_delegate.process.os.name", "nt"), \
+             mock.patch("codex_delegate.process.subprocess.Popen", factory):
+            run_bounded(["codex", "--version"], None, 5.0)
+        assert "start_new_session" not in seen
+
+    def test_missing_binary_sets_missing_flag(self) -> None:
+        with mock.patch(
+            "codex_delegate.process.subprocess.Popen",
+            side_effect=FileNotFoundError("nope"),
+        ):
+            result = run_bounded(["no-such-binary"], None, 1.0)
+        assert result.get("missing") is True
+        assert result["returncode"] == 127
+
+    def test_permission_error_is_not_missing(self) -> None:
+        """Only FileNotFoundError maps to missing=True; other OS errors propagate."""
+        with mock.patch(
+            "codex_delegate.process.subprocess.Popen",
+            side_effect=PermissionError("denied"),
+        ):
+            with pytest.raises(PermissionError):
+                run_bounded(["/root/secret"], None, 1.0)
+
+    def test_half_line_jsonl_does_not_look_like_success(self) -> None:
+        """Partial stream after kill must not be treated as a completed turn."""
+        half = (
+            '{"type":"thread.started","thread_id":"t1"}\n'
+            '{"type":"item.completed","item":{"id":"i","type":"agent_message","text":"hi'
+        )
+        parsed = parse_event_stream(half)
+        assert parsed["turn_completed"] is False
+        assert parsed["unparsed_lines"] >= 1
+        # timedOut callers short-circuit before trusting this; still never raises.
+        factory, _seen = _fake_popen(hang=True, stdout=half)
+        with mock.patch("codex_delegate.process.subprocess.Popen", factory), \
+             mock.patch("codex_delegate.process.kill_process_tree"):
+            result = run_bounded(["codex", "exec", "--json", "-"], None, 1.0)
+        assert result["timedOut"] is True
+        # hang=True drains on second communicate with the provided stdout
+        assert result["stdout"] == half
 
 
 # ===========================================================================
@@ -1459,6 +1646,73 @@ class TestSelfTestRow:
         # A bare structured dict is not success.
         row = self_test_tool_row("codex_delegate_doctor", {"text_preview": "hanging..."})
         assert row["ok"] is False
+
+    def test_total_skip_is_not_result_pass(self) -> None:
+        """R5 trap: if every row is SKIP, RESULT must not read as healthy."""
+        rows = [
+            self_test_tool_row("a", {"ok": False, "error": "DOCTOR_TIMEOUT"}),
+            self_test_tool_row("b", {"ok": False, "error": "DOCTOR_TIMEOUT"}),
+        ]
+        assert all(r["skipped"] for r in rows)
+        exit_code, line, passed, failed, skipped = evaluate_self_test_rows(rows)
+        assert passed == 0
+        assert failed == 0
+        assert skipped == 2
+        assert exit_code == 1
+        assert line.startswith("RESULT: FAIL")
+        assert "2 skipped" in line
+
+    def test_one_pass_one_skip_is_result_pass(self) -> None:
+        rows = [
+            {"name": "binary", "ok": True, "detail": "ok", "skipped": False},
+            self_test_tool_row("doctor", {"ok": False, "error": "DOCTOR_TIMEOUT"}),
+        ]
+        exit_code, line, passed, failed, skipped = evaluate_self_test_rows(rows)
+        assert exit_code == 0
+        assert line.startswith("RESULT: PASS")
+        assert passed == 1 and failed == 0 and skipped == 1
+
+    def test_fail_on_skip_env_mode(self) -> None:
+        rows = [
+            {"name": "binary", "ok": True, "detail": "ok", "skipped": False},
+            self_test_tool_row("doctor", {"ok": False, "error": "DOCTOR_TIMEOUT"}),
+        ]
+        exit_code, line, *_ = evaluate_self_test_rows(rows, fail_on_skip=True)
+        assert exit_code == 1
+        assert line.startswith("RESULT: FAIL")
+
+    def test_real_failure_still_fails(self) -> None:
+        rows = [
+            {"name": "binary", "ok": True, "detail": "ok", "skipped": False},
+            self_test_tool_row("status", {"ok": False, "error": "ALLOWED_ROOTS_EMPTY"}),
+        ]
+        exit_code, line, passed, failed, skipped = evaluate_self_test_rows(rows)
+        assert exit_code == 1
+        assert failed == 1 and skipped == 0 and passed == 1
+        assert line.startswith("RESULT: FAIL")
+
+    def test_only_doctor_timeout_is_in_vendor_skip_set(self) -> None:
+        from codex_delegate.__main__ import VENDOR_SKIP_ERROR_CODES
+        assert VENDOR_SKIP_ERROR_CODES == frozenset({"DOCTOR_TIMEOUT"})
+
+    def test_doctor_timeout_not_env_tunable_below_floor(self) -> None:
+        """A caller cannot shrink the bound to 0.1s and get a free vendor SKIP."""
+        capt = CapturingSubprocess(_proc(returncode=124, timed_out=True))
+        result = run_doctor_json(
+            codex_bin="codex",
+            subprocess_runner=capt,
+            which=lambda n: "/usr/bin/codex",
+            timeout=0.1,
+        )
+        assert result["error"] == "DOCTOR_TIMEOUT"
+        # Floor is 1.0s; still capped by DOCTOR_TIMEOUT_SECONDS (constant, not env).
+        assert capt.calls[0]["timeout"] >= 1.0
+        assert capt.calls[0]["timeout"] <= DOCTOR_TIMEOUT_SECONDS
+        # Bound is a module constant — no getenv of a doctor-timeout override.
+        import inspect
+        from codex_delegate import status as status_mod
+        src = inspect.getsource(status_mod.run_doctor_json)
+        assert "getenv" not in src and "environ" not in src
 
 
 # ===========================================================================

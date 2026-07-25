@@ -37,6 +37,7 @@ python codex_delegate/server.py          # flat launch (dual-import supported)
 | `CODEX_DELEGATE_REASONING_EFFORT` | default effort | — |
 | `CODEX_DELEGATE_TIMEOUT_SECONDS` | default timeout | `900` |
 | `CODEX_DELEGATE_IGNORE_USER_CONFIG` | emit `--ignore-user-config` | **on** (`0/false/off/no` disables) |
+| `CODEX_DELEGATE_SELF_TEST_FAIL_ON_SKIP` | make `--self-test` exit 1 on any SKIP | off |
 
 `--ignore-user-config` defaults **on** so a delegated lane does not inherit the
 operator's `$CODEX_HOME/config.toml` MCP servers and skills. Auth still resolves
