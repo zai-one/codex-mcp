@@ -273,20 +273,33 @@ def _handle_review(
 ) -> dict[str, Any]:
     """Run codex exec review with process cwd = lane worktree (no --cd / -s / --color)."""
     del git_runner  # review does not mutate git; kept for signature symmetry
+    try:
+        from .lane_lock import lane_run_scope
+    except ImportError:  # pragma: no cover
+        from lane_lock import lane_run_scope
+
     _reject_resume_arg(args)
     codex_bin = resolve_server_codex_bin(args)
     root = resolve_trusted_repo_root(args, repo_root=repo_root, allowed_roots=allowed_roots)
     lanes_parent = resolve_trusted_lanes_parent(args, repo_root=root)
     lane = normalize_lane(args.get("lane"))
     wt = worktree_path_for_lane(lanes_parent, lane)
-    if not Path(wt).exists():
+    # Directory must exist on disk — a branch that still exists after the
+    # worktree was deleted is WORKTREE_MISSING, not a crash.
+    if not Path(wt).is_dir():
         return structured_error("WORKTREE_MISSING", f"lane worktree does not exist: {wt}")
 
     model = validate_model(args.get("model"))
     timeout = validate_timeout(args.get("timeout_seconds"))
     instructions = args.get("instructions")
-    prompt = str(instructions).strip() if instructions else "Review the changes in this lane."
+    # Empty / whitespace-only instructions fall back to a stable default prompt.
+    prompt = (
+        str(instructions).strip()
+        if instructions is not None and str(instructions).strip()
+        else "Review the changes in this lane."
+    )
 
+    # Both uncommitted and base_ref are legal CLI flags together; pass through.
     argv = build_review_argv(
         codex_bin=codex_bin,
         model=model,
@@ -294,22 +307,50 @@ def _handle_review(
         uncommitted=bool(args.get("uncommitted")),
         ignore_user_config=_ignore_user_config(),
     )
+    # Defence in depth: every review argv must pass the same gates as exec.
     assert_argv_safe(argv)
 
     for tok in argv:
         if tok in FORBIDDEN_CLI_FLAGS or str(tok).startswith("--dangerously"):
             return structured_error("ARGV_FORBIDDEN_FLAG", f"forbidden flag: {tok}")
 
+    with lane_run_scope(root, lane) as busy:
+        if busy is not None:
+            return busy
+        return _run_review(
+            argv=argv,
+            codex_bin=codex_bin,
+            wt=Path(wt),
+            lane=lane,
+            prompt=prompt,
+            timeout=timeout,
+            subprocess_runner=subprocess_runner,
+            which=which,
+        )
+
+
+def _run_review(
+    *,
+    argv: list[str],
+    codex_bin: str,
+    wt: Path,
+    lane: str,
+    prompt: str,
+    timeout: float,
+    subprocess_runner: Optional[SubprocessRunner],
+    which: Optional[WhichFn],
+) -> dict[str, Any]:
     run = subprocess_runner or default_subprocess_runner
     which_fn = which or default_which
+    final_argv = list(argv)
     if not os.path.isabs(codex_bin):
         found = which_fn(codex_bin)
         if not found:
             return structured_error("CODEX_MISSING", f"codex binary not found: {codex_bin}")
-        argv = [found, *argv[1:]]
-        assert_argv_safe(argv)
+        final_argv = [found, *argv[1:]]
+        assert_argv_safe(final_argv)
 
-    proc = run(argv, Path(wt), timeout, input_text=prompt)
+    proc = run(final_argv, wt, timeout, input_text=prompt)
     if proc.get("missing"):
         return structured_error("CODEX_MISSING", f"codex binary not found: {codex_bin}")
 

@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Mapping, Optional, Sequence, TextIO
 
 try:
-    from .guard import structured_error
+    from .guard import MAX_RPC_FRAME_BYTES, structured_error
     from .handlers import handle_tool_call
     from .process import GitRunner, SubprocessRunner, WhichFn
     from .roots import (
@@ -18,7 +18,7 @@ try:
         resolve_trusted_repo_root,
     )
 except ImportError:  # pragma: no cover - flat launch via python codex_delegate/server.py
-    from guard import structured_error
+    from guard import MAX_RPC_FRAME_BYTES, structured_error
     from handlers import handle_tool_call
     from process import GitRunner, SubprocessRunner, WhichFn
     from roots import (
@@ -165,7 +165,7 @@ def _tool_schemas() -> list[dict[str, Any]]:
 
 
 def handle_jsonrpc(
-    message: Mapping[str, Any],
+    message: Any,
     *,
     repo_root: Optional[Path | str] = None,
     allowed_roots: Optional[Sequence[Path | str]] = None,
@@ -175,7 +175,22 @@ def handle_jsonrpc(
     audit_stream: Optional[TextIO] = None,
     principal: str = "local-dev",
 ) -> Optional[dict[str, Any]]:
-    """Handle one JSON-RPC message. Notifications (no id) return None."""
+    """Handle one JSON-RPC message. Notifications (no id) return None.
+
+    Never raises. Batch requests (JSON arrays) are refused with -32600 —
+    this server is single-request only. Hostile ``params`` / ``arguments``
+    shapes degrade to structured tool errors rather than crashes.
+    """
+    # Batch requests (JSON-RPC arrays) and non-object frames.
+    if isinstance(message, list):
+        return {
+            "jsonrpc": "2.0",
+            "id": None,
+            "error": {
+                "code": -32600,
+                "message": "Batch requests are not supported",
+            },
+        }
     if not isinstance(message, Mapping):
         return {
             "jsonrpc": "2.0",
@@ -210,15 +225,43 @@ def handle_jsonrpc(
         return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": _tool_schemas()}}
 
     if method == "tools/call":
-        params = message.get("params") or {}
+        params = message.get("params")
+        if params is None:
+            params = {}
         name = params.get("name") if isinstance(params, Mapping) else None
-        arguments = params.get("arguments") if isinstance(params, Mapping) else {}
+        raw_args = params.get("arguments") if isinstance(params, Mapping) else None
+        if isinstance(raw_args, Mapping):
+            arguments: Any = raw_args
+        elif raw_args is None:
+            arguments = {}
+        else:
+            # arguments as list/string/number — not a tool-args object.
+            result = structured_error(
+                "TOOL_ARGUMENTS_INVALID",
+                "tools/call arguments must be a JSON object",
+            )
+            return {"jsonrpc": "2.0", "id": msg_id, "result": _tool_result_payload(result)}
+        # Bound enormous argument blobs (already parsed; size is a honesty/DoS gate).
+        try:
+            encoded = json.dumps(arguments, ensure_ascii=False, default=str)
+        except (TypeError, ValueError):
+            result = structured_error(
+                "TOOL_ARGUMENTS_INVALID",
+                "tools/call arguments are not JSON-serialisable",
+            )
+            return {"jsonrpc": "2.0", "id": msg_id, "result": _tool_result_payload(result)}
+        if len(encoded.encode("utf-8", errors="replace")) > MAX_RPC_FRAME_BYTES:
+            result = structured_error(
+                "TOOL_ARGUMENTS_TOO_LARGE",
+                f"tools/call arguments exceed {MAX_RPC_FRAME_BYTES} bytes",
+            )
+            return {"jsonrpc": "2.0", "id": msg_id, "result": _tool_result_payload(result)}
         if not name:
             result = structured_error("TOOL_UNKNOWN", "missing tool name")
         else:
             result = handle_tool_call(
                 str(name),
-                arguments if isinstance(arguments, Mapping) else {},
+                arguments,
                 repo_root=repo_root,
                 allowed_roots=allowed_roots,
                 git_runner=git_runner,
@@ -268,27 +311,67 @@ def serve_stdio(
             break
         if first.lower().startswith("content-length:"):
             framed_mode = True
+            raw_len = first.split(":", 1)[1].strip() if ":" in first else ""
             try:
-                length = int(first.split(":", 1)[1].strip())
+                length = int(raw_len)
             except ValueError:
+                # Non-numeric Content-Length: drop the frame, keep serving.
+                _drain_headers(inn)
                 continue
+            # Negative would make read(-n) mean "read all" on TextIO — refuse.
+            # Oversize frames are refused so a hostile client cannot force a
+            # multi-megabyte allocation; the connection is abandoned because
+            # skipping the body would desynchronise the stream.
+            if length < 0 or length > MAX_RPC_FRAME_BYTES:
+                _drain_headers(inn)
+                _write_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {
+                            "code": -32600,
+                            "message": (
+                                f"Content-Length out of bounds (0..{MAX_RPC_FRAME_BYTES})"
+                            ),
+                        },
+                    },
+                    out,
+                    framed=True,
+                )
+                return
             while True:
                 line = inn.readline()
                 if line in ("", "\n", "\r\n"):
                     break
                 if not line:
                     return
-            body = inn.read(length)
-            if not body:
+            body = inn.read(length) if length > 0 else ""
+            if length > 0 and not body:
                 break
             try:
-                message = json.loads(body)
+                message = json.loads(body) if body else None
             except json.JSONDecodeError:
+                continue
+            if message is None:
                 continue
         else:
             framed_mode = False if framed_mode is None else framed_mode
             line = first.strip()
             if not line:
+                continue
+            if len(line.encode("utf-8", errors="replace")) > MAX_RPC_FRAME_BYTES:
+                _write_message(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": None,
+                        "error": {
+                            "code": -32600,
+                            "message": f"Request exceeds {MAX_RPC_FRAME_BYTES} bytes",
+                        },
+                    },
+                    out,
+                    framed=False,
+                )
                 continue
             try:
                 message = json.loads(line)
@@ -307,6 +390,14 @@ def serve_stdio(
         )
         if response is not None:
             _write_message(response, out, framed=bool(framed_mode))
+
+
+def _drain_headers(inn: TextIO) -> None:
+    """Consume header lines until the blank separator (or EOF)."""
+    while True:
+        line = inn.readline()
+        if line in ("", "\n", "\r\n") or not line:
+            return
 
 
 def main() -> None:

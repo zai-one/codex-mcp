@@ -29,6 +29,10 @@ from codex_delegate.guard import (
     FORBIDDEN_CLI_FLAGS,
     GuardError,
     HARD_CAP_TIMEOUT_SECONDS,
+    MAX_LANE_SLUG_CHARS,
+    MAX_MODELS_STDOUT_CHARS,
+    MAX_OUTPUT_SCHEMA_CHARS,
+    MAX_RPC_FRAME_BYTES,
     MIN_TIMEOUT_SECONDS,
     SANDBOX_DANGER_FULL_ACCESS,
     SANDBOX_READ_ONLY,
@@ -53,6 +57,7 @@ from codex_delegate.guard import (
     validate_session_id,
     validate_timeout,
 )
+from codex_delegate.lane_lock import reset_locks_for_tests, try_acquire_lane, release_lane
 from codex_delegate.runner import (
     collect_diff,
     default_git_runner,
@@ -72,8 +77,9 @@ from codex_delegate.server import (
     resolve_server_codex_bin,
     resolve_trusted_lanes_parent,
     resolve_trusted_repo_root,
+    serve_stdio,
 )
-from codex_delegate.status import run_doctor_json
+from codex_delegate.status import list_lanes, run_doctor_json, run_models
 from codex_delegate.__main__ import (
     SMOKE_SENTINEL,
     evaluate_self_test_rows,
@@ -85,6 +91,7 @@ from codex_delegate.process import (
     kill_process_tree,
     run_bounded,
 )
+from codex_delegate.worktree import decode_git_path, worktree_path_for_lane
 from codex_delegate import events as events_mod
 from codex_delegate import process as process_mod
 from codex_delegate import runner as runner_mod
@@ -1431,6 +1438,14 @@ def _fake_popen(
             # kill_process_tree does not consult poll(); kept for Popen fidelity.
             return None if (hang or hang_forever) else returncode
 
+        def wait(self, timeout=None):  # noqa: A002
+            # R5: run_bounded reaps after tree-kill so a long-lived server does
+            # not accumulate unreaped Popen objects.
+            seen["wait_timeout"] = timeout
+            seen["wait_calls"] = int(seen.get("wait_calls") or 0) + 1
+            self.returncode = returncode if not (hang or hang_forever) else 124
+            return self.returncode
+
     def _factory(argv, **kwargs):
         seen.update(kwargs)
         seen["argv"] = list(argv)
@@ -1494,6 +1509,8 @@ class TestTimeoutKillsProcessTree:
         assert killed == [4242], "the process tree must be killed, not only the direct child"
         # If run_bounded returned before killing, killed would be empty — not theatre.
         assert seen["communicate_calls"] >= 1
+        # R5: child must be reaped so a long-lived server cannot accumulate zombies.
+        assert seen.get("wait_calls", 0) >= 1
 
     def test_tree_kill_targets_descendants(self) -> None:
         """On Windows the kill must be /T (tree); elsewhere it must be killpg."""
@@ -2033,4 +2050,691 @@ class TestAuditHandlerEmission:
         assert "goal_sha256_8" in data
         assert "changed_file_count" in data
         assert isinstance(data["changed_file_count"], int)
+
+
+# ===========================================================================
+# ROUND 5 — full-surface audit regressions
+# ===========================================================================
+
+
+class TestOutputSchemaTempLifecycle:
+    """A1/C1: schema temp file must not leak and must live outside the worktree."""
+
+    def test_schema_file_removed_on_success(self, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        seen: dict[str, Any] = {}
+
+        def runner(args, cwd, timeout, *, input_text=None):  # type: ignore[no-untyped-def]
+            if "--output-schema" in args:
+                idx = args.index("--output-schema")
+                seen["schema_path"] = Path(args[idx + 1])
+                assert seen["schema_path"].exists()
+                # Must not live inside the worktree (diff pollution).
+                assert wt.resolve() not in seen["schema_path"].resolve().parents
+                assert not str(seen["schema_path"]).startswith(str(wt.resolve()))
+            return _proc(stdout=PROBE_A_REFUSAL_STREAM, returncode=0)
+
+        result = run_delegation(
+            goal="plan only",
+            worktree=wt,
+            plan_only=True,
+            output_schema={"type": "object"},
+            subprocess_runner=runner,
+            which=lambda n: "codex",
+            timeout_seconds=60.0,
+        )
+        assert result["ok"] is True
+        assert "schema_path" in seen
+        assert not seen["schema_path"].exists(), "schema temp file leaked after success"
+
+    def test_schema_file_removed_on_codex_missing(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """CODEX_MISSING after mkstemp must still unlink schema + last-message files."""
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        created: list[Path] = []
+        real_mkstemp = __import__("tempfile").mkstemp
+
+        def tracking_mkstemp(*a, **k):  # type: ignore[no-untyped-def]
+            fd, name = real_mkstemp(*a, **k)
+            created.append(Path(name))
+            return fd, name
+
+        monkeypatch.setattr(runner_mod.tempfile, "mkstemp", tracking_mkstemp)
+        result = run_delegation(
+            goal="x",
+            worktree=wt,
+            plan_only=True,
+            output_schema={"type": "object", "properties": {}},
+            subprocess_runner=CapturingSubprocess(_proc(missing=True, returncode=127)),
+            which=lambda n: None,
+            timeout_seconds=60.0,
+            codex_bin="codex",
+        )
+        assert result.get("ok") is False
+        assert result.get("error") == "CODEX_MISSING"
+        assert len(created) >= 2, "expected last-message + schema temps"
+        for p in created:
+            assert not p.exists(), f"leaked temp file after CODEX_MISSING: {p}"
+
+    def test_schema_write_failure_still_unlinks(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """mkstemp succeeds, write fails → finally must still unlink."""
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        created: list[Path] = []
+        real_mkstemp = __import__("tempfile").mkstemp
+
+        def tracking_mkstemp(*a, **k):  # type: ignore[no-untyped-def]
+            fd, name = real_mkstemp(*a, **k)
+            created.append(Path(name))
+            return fd, name
+
+        monkeypatch.setattr(runner_mod.tempfile, "mkstemp", tracking_mkstemp)
+
+        class Boom(Exception):
+            pass
+
+        def boom_fdopen(fd, *a, **k):  # type: ignore[no-untyped-def]
+            # Schema is the second mkstemp; fail before owning the fd.
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise Boom("write failed")
+
+        monkeypatch.setattr(runner_mod.os, "fdopen", boom_fdopen)
+        with pytest.raises(Boom):
+            run_delegation(
+                goal="x",
+                worktree=wt,
+                plan_only=True,
+                output_schema={"type": "object"},
+                subprocess_runner=CapturingSubprocess(_proc(stdout=PROBE_A_REFUSAL_STREAM)),
+                which=lambda n: "codex",
+                timeout_seconds=60.0,
+            )
+        # Outer finally in run_delegation should have unlinked tracked paths.
+        for p in created:
+            assert not p.exists(), f"leaked temp file: {p}"
+
+    def test_schema_rejects_non_object_and_oversize_and_surrogate(self) -> None:
+        with pytest.raises(GuardError) as ei:
+            validate_output_schema([1, 2, 3])
+        assert ei.value.code == "OUTPUT_SCHEMA_INVALID"
+        huge = {"x": "y" * (MAX_OUTPUT_SCHEMA_CHARS + 1)}
+        with pytest.raises(GuardError) as ei2:
+            validate_output_schema(huge)
+        assert ei2.value.code == "OUTPUT_SCHEMA_TOO_LONG"
+        # Unpaired surrogate cannot be UTF-8-encoded to the temp file.
+        with pytest.raises(GuardError) as ei3:
+            validate_output_schema({"a": "\ud800"})
+        assert ei3.value.code == "OUTPUT_SCHEMA_INVALID"
+
+
+class TestEphemeralFlag:
+    def test_ephemeral_in_exec_contract_and_argv(self) -> None:
+        assert "--ephemeral" in EXEC_FLAGS
+        argv = build_exec_argv(
+            codex_bin="codex",
+            worktree="/tmp/wt",
+            last_message_path="/tmp/o.txt",
+            sandbox="read-only",
+            ephemeral=True,
+        )
+        assert "--ephemeral" in argv
+        assert_argv_safe(argv)
+        assert_flags_in_contract(argv)
+
+
+class TestReviewHandlerEdges:
+    def test_missing_worktree_is_structured(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lanes = tmp_path / "lanes"
+        lanes.mkdir()
+        with mock.patch.dict(os.environ, {"CODEX_DELEGATE_LANES_PARENT": str(lanes)}, clear=False):
+            result = handle_tool_call(
+                "codex_delegate_review",
+                {"lane": "ghost"},
+                repo_root=repo,
+                allowed_roots=[repo],
+                which=lambda n: "codex",
+            )
+        assert result["ok"] is False
+        assert result["error"] == "WORKTREE_MISSING"
+
+    def test_whitespace_instructions_use_default_prompt(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lanes = tmp_path / "lanes"
+        wt = lanes / "feat"
+        wt.mkdir(parents=True)
+        capt = CapturingSubprocess(_proc(stdout=PROBE_A_REFUSAL_STREAM, returncode=0))
+        with mock.patch.dict(os.environ, {"CODEX_DELEGATE_LANES_PARENT": str(lanes)}, clear=False):
+            result = handle_tool_call(
+                "codex_delegate_review",
+                {"lane": "feat", "instructions": "   \n\t  "},
+                repo_root=repo,
+                allowed_roots=[repo],
+                subprocess_runner=capt,
+                which=lambda n: "codex",
+            )
+        assert capt.calls, result
+        assert capt.calls[0]["input_text"] == "Review the changes in this lane."
+        assert result.get("ok") is True
+
+    def test_uncommitted_and_base_ref_both_emitted(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lanes = tmp_path / "lanes"
+        (lanes / "feat").mkdir(parents=True)
+        capt = CapturingSubprocess(_proc(stdout=PROBE_A_REFUSAL_STREAM, returncode=0))
+        with mock.patch.dict(os.environ, {"CODEX_DELEGATE_LANES_PARENT": str(lanes)}, clear=False):
+            handle_tool_call(
+                "codex_delegate_review",
+                {"lane": "feat", "uncommitted": True, "base_ref": "main"},
+                repo_root=repo,
+                allowed_roots=[repo],
+                subprocess_runner=capt,
+                which=lambda n: "codex",
+            )
+        args = capt.calls[0]["args"]
+        assert "--uncommitted" in args
+        assert "--base" in args
+        assert args[args.index("--base") + 1] == "main"
+        assert_flags_in_contract(args)
+
+    def test_review_error_status_not_ok(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lanes = tmp_path / "lanes"
+        (lanes / "feat").mkdir(parents=True)
+        capt = CapturingSubprocess(_proc(stdout=ERROR_NO_COMPLETE_STREAM, returncode=0))
+        with mock.patch.dict(os.environ, {"CODEX_DELEGATE_LANES_PARENT": str(lanes)}, clear=False):
+            result = handle_tool_call(
+                "codex_delegate_review",
+                {"lane": "feat"},
+                repo_root=repo,
+                allowed_roots=[repo],
+                subprocess_runner=capt,
+                which=lambda n: "codex",
+            )
+        assert result["ok"] is False
+        assert result["status"] == "error"
+
+
+class TestModelsReductionBounds:
+    def test_object_without_models_is_empty_catalog(self) -> None:
+        capt = CapturingSubprocess(_proc(stdout=json.dumps({"version": 1}), returncode=0))
+        result = run_models(subprocess_runner=capt, which=lambda n: "codex")
+        assert result["ok"] is True
+        assert result["models"] == []
+        assert result["count"] == 0
+
+    def test_models_field_not_list_is_parse_error(self) -> None:
+        capt = CapturingSubprocess(_proc(stdout=json.dumps({"models": "gpt-5"}), returncode=0))
+        result = run_models(subprocess_runner=capt, which=lambda n: "codex")
+        assert result["ok"] is False
+        assert result["error"] == "MODELS_PARSE_FAILED"
+
+    def test_entry_missing_slug_skipped(self) -> None:
+        payload = {"models": [{"display_name": "x"}, {"slug": "gpt-5.4-mini"}]}
+        capt = CapturingSubprocess(_proc(stdout=json.dumps(payload), returncode=0))
+        result = run_models(subprocess_runner=capt, which=lambda n: "codex")
+        assert result["ok"] is True
+        assert result["count"] == 1
+        assert result["models"][0]["slug"] == "gpt-5.4-mini"
+
+    def test_payload_over_bound_rejected(self) -> None:
+        huge = "x" * (MAX_MODELS_STDOUT_CHARS + 10)
+        capt = CapturingSubprocess(_proc(stdout=huge, returncode=0))
+        result = run_models(subprocess_runner=capt, which=lambda n: "codex")
+        assert result["ok"] is False
+        assert result["error"] == "MODELS_TOO_LARGE"
+
+
+class TestLanesPorcelainParsing:
+    def test_quoted_path_with_space_and_non_ascii(self, tmp_path: Path) -> None:
+        # Real directory for the present lane; others are missing/prunable.
+        present = tmp_path / "lane dir" / "feat name"
+        present.mkdir(parents=True)
+        quoted_present = '"' + str(present).replace("\\", "\\\\") + '"'
+        gone = tmp_path / "gone lane"
+        quoted_gone = '"' + str(gone).replace("\\", "\\\\") + '"'
+        porcelain = (
+            f"worktree {quoted_present}\n"
+            f"HEAD abcdef\n"
+            f"branch refs/heads/codex/feat\n"
+            f"\n"
+            f"worktree {tmp_path / 'main'}\n"
+            f"HEAD 111\n"
+            f"branch refs/heads/main\n"
+            f"\n"
+            f"worktree {tmp_path / 'detached'}\n"
+            f"HEAD 222\n"
+            f"detached\n"
+            f"\n"
+            f"worktree {quoted_gone}\n"
+            f"HEAD 333\n"
+            f"branch refs/heads/codex/gone\n"
+            f"prunable gitdir file points to non-existent location\n"
+            f"\n"
+        )
+        git = ScriptedGit({
+            "worktree list": _git_ok(porcelain),
+            "diff --name-only": _git_ok(""),
+            "status --porcelain": _git_ok(""),
+            "diff --stat": _git_ok(""),
+        })
+        result = list_lanes(tmp_path, git_runner=git)
+        assert result["ok"] is True
+        lanes = {L["lane"]: L for L in result["lanes"]}
+        assert "codex/feat" in lanes
+        assert "codex/gone" in lanes
+        assert lanes["codex/gone"]["worktree_missing"] is True
+        assert lanes["codex/feat"]["worktree_missing"] is False
+        # main and detached must not appear as codex lanes.
+        assert "main" not in lanes
+        assert all(L["lane"].startswith("codex/") for L in result["lanes"])
+        # Quoted path decoded (no surrounding quotes; spaces preserved).
+        assert not str(lanes["codex/feat"]["worktree_path"]).startswith('"')
+        assert "lane dir" in str(lanes["codex/feat"]["worktree_path"])
+
+    def test_decode_git_path_space_and_octal(self) -> None:
+        assert decode_git_path(r'"file with space.txt"') == "file with space.txt"
+        # UTF-8 for 'ю' is d1 8e → \321\216 in octal.
+        assert decode_git_path(r'"f\321\216"') == "fю"
+        assert decode_git_path("plain") == "plain"
+
+    def test_collect_diff_decodes_quoted_porcelain(self, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        git = ScriptedGit({
+            "diff --name-only": _git_ok('"a file.txt"\n'),
+            "status --porcelain": _git_ok('?? "b file.txt"\n'),
+            "diff --stat": _git_ok(" 2 files changed"),
+        })
+        diff = collect_diff(wt, git_runner=git)
+        assert "a file.txt" in diff["changed_files"]
+        assert "b file.txt" in diff["changed_files"]
+        assert all(not f.startswith('"') for f in diff["changed_files"])
+
+    def test_collect_diff_missing_worktree_no_raise(self, tmp_path: Path) -> None:
+        missing = tmp_path / "nope"
+        diff = collect_diff(missing, git_runner=ScriptedGit({}))
+        assert diff["ok"] is False
+        assert diff["changed_files"] == []
+
+
+class TestPathsWithSpaces:
+    def test_worktree_path_preserves_space_and_non_ascii(self, tmp_path: Path) -> None:
+        parent = tmp_path / "Codex CLI" / "lanes"
+        path = worktree_path_for_lane(parent, "codex/feat-ю")
+        assert "Codex CLI" in str(path)
+        assert path.name == "feat-ю"
+        # argv element must be the raw path string (no manual quotes).
+        argv = build_exec_argv(
+            codex_bin="codex",
+            worktree=str(path),
+            last_message_path=str(tmp_path / "out.txt"),
+            sandbox="read-only",
+        )
+        cd_val = argv[argv.index("--cd") + 1]
+        assert cd_val == str(path)
+        assert not cd_val.startswith('"')
+
+    def test_prepare_worktree_passes_space_path_as_single_argv(self, tmp_path: Path) -> None:
+        repo = tmp_path / "My Repo"
+        repo.mkdir()
+        lanes = tmp_path / "Codex CLI" / "lanes"
+        seen: list[list[str]] = []
+
+        def worktree_add(tokens, cwd, timeout):  # type: ignore[no-untyped-def]
+            seen.append(list(tokens))
+            bi = tokens.index("-b")
+            Path(tokens[bi + 2]).mkdir(parents=True, exist_ok=True)
+            return _git_ok()
+
+        git = ScriptedGit({
+            "--version": _git_ok("git version 2.40.0"),
+            "rev-parse --verify": _git_ok("abc"),
+            "status --porcelain": _git_ok(""),
+            "worktree add": worktree_add,
+        })
+        result = prepare_worktree(
+            repo_root=repo,
+            lane="codex/feat",
+            base_ref="HEAD",
+            lanes_parent=lanes,
+            git_runner=git,
+        )
+        assert result["ok"] is True
+        assert " " in result["worktree_path"] or "Codex CLI" in result["worktree_path"]
+        assert seen, "worktree add not called"
+        # Path is one argv token — not split on spaces.
+        joined = " ".join(seen[0])
+        assert "Codex CLI" in joined or str(lanes) in joined
+
+
+class TestConcurrencyLaneBusy:
+    def test_second_run_same_lane_rejected(self, tmp_path: Path) -> None:
+        reset_locks_for_tests()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        err = try_acquire_lane(repo, "codex/feat")
+        assert err is None
+        try:
+            result = delegate(
+                goal="second",
+                lane="feat",
+                repo_root=repo,
+                lanes_parent=tmp_path / "lanes",
+                plan_only=True,
+                git_runner=ScriptedGit({"--version": _git_ok("git version 2")}),
+                subprocess_runner=CapturingSubprocess(_proc(stdout=PROBE_A_REFUSAL_STREAM)),
+                which=lambda n: "codex",
+                timeout_seconds=60.0,
+            )
+            assert result["ok"] is False
+            assert result["error"] == "LANE_BUSY"
+        finally:
+            release_lane(repo, "codex/feat")
+            reset_locks_for_tests()
+
+    def test_review_busy_same_lane(self, tmp_path: Path) -> None:
+        reset_locks_for_tests()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lanes = tmp_path / "lanes"
+        (lanes / "feat").mkdir(parents=True)
+        err = try_acquire_lane(repo, "codex/feat")
+        assert err is None
+        try:
+            with mock.patch.dict(os.environ, {"CODEX_DELEGATE_LANES_PARENT": str(lanes)}, clear=False):
+                result = handle_tool_call(
+                    "codex_delegate_review",
+                    {"lane": "feat"},
+                    repo_root=repo,
+                    allowed_roots=[repo],
+                    which=lambda n: "codex",
+                    subprocess_runner=CapturingSubprocess(_proc(stdout=PROBE_A_REFUSAL_STREAM)),
+                )
+            assert result["ok"] is False
+            assert result["error"] == "LANE_BUSY"
+        finally:
+            release_lane(repo, "codex/feat")
+            reset_locks_for_tests()
+
+
+class TestProtocolRobustness:
+    def test_batch_array_refused(self) -> None:
+        resp = handle_jsonrpc([{"jsonrpc": "2.0", "id": 1, "method": "ping"}])
+        assert resp is not None
+        assert resp["error"]["code"] == -32600
+        assert "Batch" in resp["error"]["message"]
+
+    def test_non_object_body(self) -> None:
+        resp = handle_jsonrpc("ping")
+        assert resp["error"]["code"] == -32600
+
+    def test_id_null_and_float(self) -> None:
+        r1 = handle_jsonrpc({"jsonrpc": "2.0", "id": None, "method": "ping"})
+        assert r1 is not None and r1["id"] is None and "result" in r1
+        r2 = handle_jsonrpc({"jsonrpc": "2.0", "id": 1.5, "method": "ping"})
+        assert r2 is not None and r2["id"] == 1.5
+
+    def test_params_list_and_arguments_list(self) -> None:
+        r1 = handle_jsonrpc({
+            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+            "params": ["codex_delegate_status"],
+        })
+        assert r1 is not None
+        sc = r1["result"]["structuredContent"]
+        assert sc["ok"] is False
+        assert sc["error"] == "TOOL_UNKNOWN"
+        r2 = handle_jsonrpc({
+            "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+            "params": {"name": "codex_delegate_status", "arguments": [1, 2]},
+        })
+        sc2 = r2["result"]["structuredContent"]
+        assert sc2["ok"] is False
+        assert sc2["error"] == "TOOL_ARGUMENTS_INVALID"
+
+    def test_unknown_method_notification_silent(self) -> None:
+        assert handle_jsonrpc({"jsonrpc": "2.0", "method": "nope/whatever"}) is None
+
+    def test_unknown_method_with_id(self) -> None:
+        r = handle_jsonrpc({"jsonrpc": "2.0", "id": 9, "method": "nope"})
+        assert r["error"]["code"] == -32601
+
+    def test_content_length_negative_closes(self) -> None:
+        inn = io.StringIO("Content-Length: -1\r\n\r\n")
+        out = io.StringIO()
+        serve_stdio(stdin=inn, stdout=out)
+        body = out.getvalue()
+        assert "Content-Length out of bounds" in body
+
+    def test_content_length_non_numeric_skipped(self) -> None:
+        inn = io.StringIO(
+            "Content-Length: abc\r\n\r\n"
+            + json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}) + "\n"
+        )
+        out = io.StringIO()
+        serve_stdio(stdin=inn, stdout=out)
+        # After bad frame, line-delimited ping still works.
+        assert '"result"' in out.getvalue()
+
+    def test_content_length_oversize_closes(self) -> None:
+        inn = io.StringIO(f"Content-Length: {MAX_RPC_FRAME_BYTES + 1}\r\n\r\n")
+        out = io.StringIO()
+        serve_stdio(stdin=inn, stdout=out)
+        assert "out of bounds" in out.getvalue()
+
+    def test_arguments_blob_too_large(self) -> None:
+        huge = "x" * (MAX_RPC_FRAME_BYTES + 50)
+        r = handle_jsonrpc({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": "codex_delegate_status", "arguments": {"pad": huge}},
+        })
+        sc = r["result"]["structuredContent"]
+        assert sc["ok"] is False
+        assert sc["error"] == "TOOL_ARGUMENTS_TOO_LARGE"
+
+
+class TestGuardBypassesRound5:
+    def test_config_long_form_sandbox_mode_rejected(self) -> None:
+        argv = [
+            "codex", "exec", "--cd", "/tmp/w", "-s", "read-only", "--json",
+            "--color", "never", "-o", "/tmp/o",
+            "--config", "sandbox_mode=workspace-write",
+            "-",
+        ]
+        with pytest.raises(GuardError) as ei:
+            assert_argv_safe(argv)
+        assert ei.value.code == "ARGV_FORBIDDEN_FLAG"
+
+    def test_glued_c_sandbox_mode_rejected(self) -> None:
+        argv = [
+            "codex", "exec", "--cd", "/tmp/w", "-s", "read-only", "--json",
+            "--color", "never", "-o", "/tmp/o",
+            "-csandbox_mode=danger-full-access",
+            "-",
+        ]
+        with pytest.raises(GuardError) as ei:
+            assert_argv_safe(argv)
+        assert ei.value.code == "ARGV_FORBIDDEN_FLAG"
+
+    def test_config_equals_form_rejected(self) -> None:
+        argv = [
+            "codex", "exec", "--cd", "/tmp/w", "-s", "read-only", "--json",
+            "--color", "never", "-o", "/tmp/o",
+            "--config=sandbox_mode=workspace-write",
+            "-",
+        ]
+        with pytest.raises(GuardError) as ei:
+            assert_argv_safe(argv)
+        assert ei.value.code == "ARGV_FORBIDDEN_FLAG"
+
+    def test_quoted_and_whitespace_key_rejected(self) -> None:
+        argv = [
+            "codex", "exec", "--cd", "/tmp/w", "-s", "read-only", "--json",
+            "--color", "never", "-o", "/tmp/o",
+            "-c", '  "sandbox_mode"=workspace-write',
+            "-",
+        ]
+        with pytest.raises(GuardError) as ei:
+            assert_argv_safe(argv)
+        assert ei.value.code == "ARGV_FORBIDDEN_FLAG"
+
+    def test_two_c_second_malicious_rejected(self) -> None:
+        argv = [
+            "codex", "exec", "--cd", "/tmp/w", "-s", "read-only", "--json",
+            "--color", "never", "-o", "/tmp/o",
+            "-c", 'model_reasoning_effort="low"',
+            "-c", "sandbox_mode=workspace-write",
+            "-",
+        ]
+        with pytest.raises(GuardError) as ei:
+            assert_argv_safe(argv)
+        assert ei.value.code == "ARGV_FORBIDDEN_FLAG"
+
+    def test_lane_windows_reserved_and_long(self) -> None:
+        for name in ("con", "nul", "prn", "aux", "com1", "lpt9"):
+            with pytest.raises(GuardError) as ei:
+                normalize_lane(name)
+            assert ei.value.code == "LANE_RESERVED", name
+        with pytest.raises(GuardError) as ei2:
+            normalize_lane("a" * (MAX_LANE_SLUG_CHARS + 1))
+        assert ei2.value.code == "LANE_INVALID"
+        with pytest.raises(GuardError) as ei3:
+            normalize_lane("CODEX/x")
+        assert ei3.value.code == "LANE_INVALID"
+        with pytest.raises(GuardError) as ei4:
+            normalize_lane("codex//x")
+        assert ei4.value.code == "LANE_INVALID"
+        with pytest.raises(GuardError) as ei5:
+            normalize_lane("codex/CODEX/x")
+        assert ei5.value.code == "LANE_INVALID"
+
+    def test_codex_bin_unc_and_trailing_junk(self) -> None:
+        with pytest.raises(GuardError) as ei:
+            validate_codex_bin(r"\\server\share\codex.exe")
+        assert ei.value.code == "CODEX_BIN_INVALID"
+        # Absolute path form must match the host path separator so basename
+        # extraction is meaningful on both Windows and POSIX.
+        if os.name == "nt":
+            dotted = r"C:\tools\codex.exe."
+            spaced = r"C:\tools\codex.exe "
+            cleaned = r"C:\tools\codex.exe"
+        else:
+            dotted = "/usr/bin/codex."
+            spaced = "/usr/bin/codex "
+            cleaned = "/usr/bin/codex"
+        with pytest.raises(GuardError) as ei2:
+            validate_codex_bin(dotted)
+        assert ei2.value.code == "CODEX_BIN_INVALID"
+        # Trailing whitespace is normalised by strip() before validation; the
+        # returned path must not retain it (Windows would strip on open anyway).
+        assert validate_codex_bin(spaced) == cleaned
+
+    def test_audit_codex_cred_path_suppressed(self) -> None:
+        with pytest.raises(AuditError):
+            sanitize_event({"cwd": r"C:\Users\alice\.codex\sessions", "tool": "x"})
+        buf = io.StringIO()
+        emit_audit({"cwd": r"C:\Users\alice\.codex\auth.json", "tool": "x"}, stream=buf)
+        line = json.loads(buf.getvalue().strip())
+        assert line.get("outcome") == "audit_suppressed" or line.get("error") == "AUDIT_REDACTED"
+
+
+class TestHonestyInvariantsRound5:
+    """G: every remaining ok/status verdict must not claim success falsely."""
+
+    def test_doctor_non_json_is_not_ok(self) -> None:
+        capt = CapturingSubprocess(_proc(stdout="not-json-at-all", returncode=0))
+        result = run_doctor_json(subprocess_runner=capt, which=lambda n: "codex")
+        assert result["ok"] is False, "rc=0 + non-JSON must not report doctor success"
+        assert result["error"] == "DOCTOR_PARSE_FAILED"
+
+    def test_doctor_empty_body_is_not_ok(self) -> None:
+        capt = CapturingSubprocess(_proc(stdout="", returncode=0))
+        result = run_doctor_json(subprocess_runner=capt, which=lambda n: "codex")
+        assert result["ok"] is False
+        assert result["error"] == "DOCTOR_PARSE_FAILED"
+
+    def test_doctor_valid_json_rc0_is_ok(self) -> None:
+        capt = CapturingSubprocess(_proc(stdout='{"status":"ok"}', returncode=0))
+        result = run_doctor_json(subprocess_runner=capt, which=lambda n: "codex")
+        assert result["ok"] is True
+        assert result["doctor"] == {"status": "ok"}
+
+    def test_status_envelope_ok_even_when_binary_missing(self, tmp_path: Path) -> None:
+        """Status is a health *report*: ok means the report was built, not that
+        every subsystem is healthy. Nested fields carry the real signal."""
+        result = handle_tool_call(
+            "codex_delegate_status",
+            {},
+            allowed_roots=[tmp_path],
+            which=lambda n: None,
+            git_runner=lambda args, cwd, timeout: {
+                "args": [], "returncode": 0, "stdout": "git version 2",
+                "stderr": "", "timedOut": False,
+            },
+            subprocess_runner=lambda *a, **k: _proc(missing=True),
+        )
+        assert result["ok"] is True
+        assert result["codex"]["binary_found"] is False
+
+    def test_review_timeout_not_ok(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lanes = tmp_path / "lanes"
+        (lanes / "feat").mkdir(parents=True)
+        capt = CapturingSubprocess(_proc(stdout="", returncode=124, timed_out=True))
+        with mock.patch.dict(os.environ, {"CODEX_DELEGATE_LANES_PARENT": str(lanes)}, clear=False):
+            result = handle_tool_call(
+                "codex_delegate_review",
+                {"lane": "feat"},
+                repo_root=repo,
+                allowed_roots=[repo],
+                subprocess_runner=capt,
+                which=lambda n: "codex",
+            )
+        assert result["ok"] is False
+        assert result["status"] == "timeout"
+
+    def test_execute_no_changes_still_honest(self, tmp_path: Path) -> None:
+        """Reconfirm the R4 honesty class remains covered after R5 refactors."""
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lanes = tmp_path / "lanes"
+
+        def worktree_add(tokens, cwd, timeout):  # type: ignore[no-untyped-def]
+            bi = tokens.index("-b")
+            Path(tokens[bi + 2]).mkdir(parents=True, exist_ok=True)
+            return _git_ok()
+
+        git = ScriptedGit({
+            "--version": _git_ok("git version 2.40.0"),
+            "rev-parse --verify": _git_ok("abc"),
+            "status --porcelain": _git_ok(""),
+            "worktree add": worktree_add,
+            "diff --name-only": _git_ok(""),
+            "diff --stat": _git_ok(""),
+        })
+        result = delegate(
+            goal="write a file",
+            lane="feat",
+            repo_root=repo,
+            lanes_parent=lanes,
+            plan_only=False,
+            sandbox="workspace-write",
+            git_runner=git,
+            subprocess_runner=CapturingSubprocess(_proc(stdout=PROBE_A_REFUSAL_STREAM, returncode=0)),
+            which=lambda n: "codex",
+            timeout_seconds=60.0,
+        )
+        assert result["ok"] is False
+        assert result["error"] == "EXECUTE_NO_CHANGES"
 

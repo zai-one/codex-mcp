@@ -13,6 +13,14 @@ DEFAULT_CODEX_BIN = "codex"
 ALLOWED_BIN_BASENAMES = frozenset({"codex", "codex.exe", "codex.cmd", "codex.bat"})
 LANE_PREFIX = "codex"
 RESERVED_LANE_NAMES = frozenset({"dev", "master", "main", "release", "prod", "production", "rc"})
+# Windows device names: a lane slug equal to one of these cannot be opened as a
+# directory on Win32 (CreateFile maps them to devices). Reject on every OS so
+# the same policy applies in CI and on the operator host.
+_WINDOWS_RESERVED_SLUGS = frozenset({
+    "con", "prn", "aux", "nul",
+    *{f"com{i}" for i in range(1, 10)},
+    *{f"lpt{i}" for i in range(1, 10)},
+})
 
 SANDBOX_READ_ONLY = "read-only"
 SANDBOX_WORKSPACE_WRITE = "workspace-write"
@@ -41,6 +49,11 @@ DOCTOR_TIMEOUT_SECONDS = 45.0
 MAX_GOAL_CHARS = 60_000
 MAX_MODEL_CHARS = 128
 MAX_OUTPUT_SCHEMA_CHARS = 16_000
+MAX_LANE_SLUG_CHARS = 64
+# Bound for `codex debug models` stdout before json.loads (DoS / memory).
+MAX_MODELS_STDOUT_CHARS = 1_000_000
+# JSON-RPC Content-Length and tools/call argument blob ceiling.
+MAX_RPC_FRAME_BYTES = 2_000_000
 STDIN_PROMPT_SENTINEL = "-"
 TRUNCATION_MARKER = "…(truncated)"
 
@@ -72,6 +85,9 @@ def normalize_lane(name: Any) -> str:
     if not raw:
         raise GuardError("LANE_EMPTY", "lane name is empty")
 
+    # Prefix match is case-sensitive on the wire form we emit (`codex/`); a
+    # caller who sends `CODEX/x` still has a slash and is rejected as invalid
+    # form rather than silently accepted under a different prefix.
     if raw.startswith(f"{LANE_PREFIX}/"):
         slug = raw[len(LANE_PREFIX) + 1 :]
     elif "/" in raw:
@@ -87,8 +103,20 @@ def normalize_lane(name: Any) -> str:
             "LANE_INVALID",
             f"lane slug must match ^[a-z0-9][a-z0-9-]*$: {slug!r}",
         )
+    if len(slug) > MAX_LANE_SLUG_CHARS:
+        raise GuardError(
+            "LANE_INVALID",
+            f"lane slug exceeds {MAX_LANE_SLUG_CHARS} characters",
+        )
     if slug in RESERVED_LANE_NAMES:
         raise GuardError("LANE_RESERVED", f"lane name is reserved: {slug!r}")
+    # Reject Windows device names (and the same names with a trailing $extension
+    # like `con.txt` is not possible under our slug charset; bare names only).
+    if slug in _WINDOWS_RESERVED_SLUGS:
+        raise GuardError(
+            "LANE_RESERVED",
+            f"lane slug is a reserved device name: {slug!r}",
+        )
     return f"{LANE_PREFIX}/{slug}"
 
 
@@ -226,6 +254,15 @@ def validate_output_schema(value: Any) -> Optional[str]:
             "OUTPUT_SCHEMA_TOO_LONG",
             f"output_schema exceeds {MAX_OUTPUT_SCHEMA_CHARS} characters",
         )
+    # Reject unpaired surrogates / non-UTF-8 so the temp-file write cannot fail
+    # after mkstemp with a half-defined schema path.
+    try:
+        compact.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise GuardError(
+            "OUTPUT_SCHEMA_INVALID",
+            "output_schema contains non-UTF-8 code points",
+        ) from exc
     return compact
 
 
@@ -244,7 +281,20 @@ def validate_codex_bin(value: Any, *, from_client: bool = False) -> str:
     if not text:
         return DEFAULT_CODEX_BIN
 
+    # UNC / extended-length paths are not a supported install layout for this
+    # package; reject rather than spawn from a network share we cannot audit.
+    if text.startswith("\\\\") or text.startswith("//"):
+        raise GuardError("CODEX_BIN_INVALID", "codex_bin UNC path is not allowed")
+
     basename = Path(text).name
+    # Windows strips trailing dots/spaces from path components; a basename that
+    # only becomes allowed after stripping would open a different file than the
+    # string we validate. Reject any basename with trailing dot or space.
+    if basename != basename.rstrip(" .") or basename.endswith("."):
+        raise GuardError(
+            "CODEX_BIN_INVALID",
+            f"codex_bin basename not allowed: {basename!r}",
+        )
     if basename.lower() not in {b.lower() for b in ALLOWED_BIN_BASENAMES}:
         raise GuardError(
             "CODEX_BIN_INVALID",
@@ -257,6 +307,12 @@ def validate_codex_bin(value: Any, *, from_client: bool = False) -> str:
             raise GuardError(
                 "CODEX_BIN_INVALID",
                 "codex_bin path must be absolute or a bare name",
+            )
+        # Trailing space/dot on the full path (Windows path canonicalisation).
+        if text != text.rstrip(" .") or text.endswith("."):
+            raise GuardError(
+                "CODEX_BIN_INVALID",
+                "codex_bin path must not end with space or dot",
             )
     return text
 
@@ -496,21 +552,8 @@ def assert_argv_safe(argv: Sequence[str]) -> None:
         if tok.startswith("--dangerously"):
             raise GuardError("ARGV_FORBIDDEN_FLAG", f"forbidden flag in argv: {tok}")
 
-    # Reject -c sandbox_mode=...
-    i = 0
-    while i < len(tokens):
-        if tokens[i] == "-c":
-            if i + 1 < len(tokens):
-                override = tokens[i + 1]
-                key = override.split("=", 1)[0].strip().strip('"').strip("'")
-                if key == "sandbox_mode":
-                    raise GuardError(
-                        "ARGV_FORBIDDEN_FLAG",
-                        "argv must not override sandbox_mode via -c",
-                    )
-            i += 2
-            continue
-        i += 1
+    # Reject sandbox_mode overrides via -c / --config in every spellable form.
+    _reject_sandbox_mode_config_overrides(tokens)
 
     # R7 immune system: every emitted flag must be in the real sub-command set.
     try:
@@ -518,6 +561,55 @@ def assert_argv_safe(argv: Sequence[str]) -> None:
     except ImportError:  # pragma: no cover
         from cli_contract import assert_flags_in_contract
     assert_flags_in_contract(tokens)
+
+
+def _config_override_key(override: str) -> str:
+    """Extract the config key from a ``key=value`` override token."""
+    key = str(override).split("=", 1)[0]
+    return key.strip().strip('"').strip("'").strip()
+
+
+def _reject_if_sandbox_mode_key(override: str) -> None:
+    if _config_override_key(override) == "sandbox_mode":
+        raise GuardError(
+            "ARGV_FORBIDDEN_FLAG",
+            "argv must not override sandbox_mode via -c/--config",
+        )
+
+
+def _reject_sandbox_mode_config_overrides(tokens: Sequence[str]) -> None:
+    """Fail closed on ``-c``/``--config`` forms that set ``sandbox_mode``.
+
+    Closed forms:
+    - ``-c sandbox_mode=...`` / ``--config sandbox_mode=...``
+    - ``-c`` / ``--config`` with leading whitespace or quoted key
+    - glued short form ``-csandbox_mode=...``
+    - long form ``--config=sandbox_mode=...``
+    - multiple ``-c`` entries (each is checked)
+
+    Not closed (CLI / OS limits, not argv shape): a config.toml the operator
+    placed on disk when ``--ignore-user-config`` is deliberately off. That path
+    is outside argv construction.
+    """
+    i = 0
+    n = len(tokens)
+    while i < n:
+        tok = tokens[i]
+        if tok in {"-c", "--config"}:
+            if i + 1 < n:
+                _reject_if_sandbox_mode_key(tokens[i + 1])
+            i += 2
+            continue
+        if tok.startswith("--config="):
+            _reject_if_sandbox_mode_key(tok[len("--config="):])
+            i += 1
+            continue
+        # Glued short option: -csandbox_mode=workspace-write (not -c alone).
+        if tok.startswith("-c") and tok != "-c" and not tok.startswith("--"):
+            _reject_if_sandbox_mode_key(tok[2:])
+            i += 1
+            continue
+        i += 1
 
 
 

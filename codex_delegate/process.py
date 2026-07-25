@@ -207,6 +207,13 @@ def run_bounded(
             # bytes already collected, then abandon rather than block past the bound.
             stdout = _as_text(second_exc.stdout) or _as_text(first_exc.stdout)
             stderr = _as_text(second_exc.stderr) or _as_text(first_exc.stderr)
+        # Reap the child so a long-lived stdio server does not accumulate
+        # zombie / unclosed Popen objects across timed-out calls. Tree kill
+        # already ran above; wait is best-effort only.
+        try:
+            proc.wait(timeout=TREE_KILL_GRACE_SECONDS)
+        except Exception:  # noqa: BLE001 — abandon; do not extend the wall clock further
+            pass
         timeout_msg = f"timed out after {timeout}s"
         err = (stderr or "").rstrip()
         if err:
