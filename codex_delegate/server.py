@@ -35,6 +35,8 @@ PROTOCOL_VERSION = "2024-11-05"
 TOOL_NAMES = [
     "codex_delegate",
     "codex_delegate_plan",
+    "codex_delegate_start",
+    "codex_delegate_poll",
     "codex_delegate_review",
     "codex_delegate_status",
     "codex_delegate_doctor",
@@ -110,6 +112,36 @@ def _tool_schemas() -> list[dict[str, Any]]:
                 "type": "object",
                 "properties": {k: v for k, v in delegate_props.items() if k != "plan_only"},
                 "required": ["goal", "lane"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "codex_delegate_start",
+            "description": (
+                "Detached delegation: same arguments and same guarantees as codex_delegate, "
+                "but returns a job_id immediately instead of holding the request open for "
+                "the whole lane. Poll it with codex_delegate_poll."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": delegate_props,
+                "required": ["goal", "lane"],
+                "additionalProperties": False,
+            },
+        },
+        {
+            "name": "codex_delegate_poll",
+            "description": (
+                "Read a detached delegation back by job_id. A finished job returns the "
+                "same envelope the synchronous path returns, and stays readable: polling "
+                "twice gives the same answer. Without job_id, lists the jobs."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "job_id": {"type": "string", "description": "Job id from codex_delegate_start"},
+                    "limit": {"type": "integer", "description": "Max records when listing"},
+                },
                 "additionalProperties": False,
             },
         },

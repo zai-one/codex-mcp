@@ -30,6 +30,7 @@ try:
         resolve_trusted_lanes_parent,
         resolve_trusted_repo_root,
     )
+    from . import jobs
     from .runner import delegate, parse_event_stream, worktree_path_for_lane
     from .status import build_status_report, list_lanes, run_doctor_json, run_models
 except ImportError:  # pragma: no cover
@@ -56,6 +57,7 @@ except ImportError:  # pragma: no cover
         resolve_trusted_lanes_parent,
         resolve_trusted_repo_root,
     )
+    import jobs
     from runner import delegate, parse_event_stream, worktree_path_for_lane
     from status import build_status_report, list_lanes, run_doctor_json, run_models
 
@@ -139,6 +141,14 @@ def handle_tool_call(
                 repo_root=repo_root, allowed_roots=allowed_roots,
                 git_runner=git_runner, subprocess_runner=subprocess_runner, which=which,
             )
+        elif name == "codex_delegate_start":
+            result = _handle_start(
+                args,
+                repo_root=repo_root, allowed_roots=allowed_roots,
+                git_runner=git_runner, subprocess_runner=subprocess_runner, which=which,
+            )
+        elif name == "codex_delegate_poll":
+            result = _handle_poll(args)
         elif name == "codex_delegate_review":
             result = _handle_review(
                 args, repo_root=repo_root, allowed_roots=allowed_roots,
@@ -260,6 +270,82 @@ def _handle_delegate(
         subprocess_runner=subprocess_runner,
         which=which,
     )
+
+
+def _handle_start(
+    args: Mapping[str, Any],
+    *,
+    repo_root: Optional[Path | str],
+    allowed_roots: Optional[Sequence[Path | str]],
+    git_runner: Optional[GitRunner],
+    subprocess_runner: Optional[SubprocessRunner],
+    which: Optional[WhichFn],
+) -> dict[str, Any]:
+    """Detached lane: validate now, spawn later, return a job id immediately.
+
+    The cheap guards run on the request path on purpose — a bad root, a bad lane
+    or a smuggled resume must fail fast and visibly, not inside a thread whose
+    only reporting channel is a later poll.
+    """
+    _reject_resume_arg(args)
+    root = resolve_trusted_repo_root(args, repo_root=repo_root, allowed_roots=allowed_roots)
+    resolve_trusted_lanes_parent(args, repo_root=root)
+    lane = normalize_lane(args.get("lane"))
+    validate_goal(args.get("goal"))
+    plan_only = bool(args.get("plan_only", False))
+
+    def _run() -> dict[str, Any]:
+        return _handle_delegate(
+            args,
+            plan_only=plan_only,
+            repo_root=repo_root,
+            allowed_roots=allowed_roots,
+            git_runner=git_runner,
+            subprocess_runner=subprocess_runner,
+            which=which,
+        )
+
+    job = jobs.start_job(_run, lane=lane, tool="codex_delegate_start")
+    return {
+        "ok": True,
+        "job_id": job["job_id"],
+        "lane": lane,
+        "state": job["state"],
+        "poll_with": "codex_delegate_poll",
+        "message": (
+            "Delegation started in the background. Poll with codex_delegate_poll "
+            "using this job_id."
+        ),
+    }
+
+
+def _handle_poll(args: Mapping[str, Any]) -> dict[str, Any]:
+    """Read a background job back, or list them when no job_id is given."""
+    raw = args.get("job_id")
+    if raw is None or not str(raw).strip():
+        return {"ok": True, "jobs": jobs.list_jobs(int(args.get("limit") or 20))}
+
+    record = jobs.snapshot(str(raw).strip())
+    if record is None:
+        return structured_error(
+            "JOB_UNKNOWN",
+            f"no job with id {str(raw).strip()!r}; it never existed or was evicted",
+        )
+
+    out: dict[str, Any] = {
+        "ok": True,
+        "job_id": record["job_id"],
+        "lane": record.get("lane"),
+        "tool": record.get("tool"),
+        "state": record.get("state"),
+    }
+    if record.get("state") in jobs.TERMINAL_STATES:
+        # The envelope is handed back verbatim: a caller polling a finished job
+        # must see exactly what the synchronous path would have returned.
+        out["result"] = record.get("result")
+        if record.get("error") is not None:
+            out["error"] = record.get("error")
+    return out
 
 
 def _handle_review(
