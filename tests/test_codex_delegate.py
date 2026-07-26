@@ -901,6 +901,12 @@ class TestExecuteLaneMustProduceChanges:
         assert result["status"] == "ok"
         assert "new.txt" in result["changed_files"]
 
+    def test_delegate_envelope_includes_changed_file_count(self, tmp_path: Path) -> None:
+        """delegate() must expose changed_file_count like list_lanes does."""
+        result = self._run(tmp_path, porcelain="?? new.txt", plan_only=False, stream=SAMPLE_STREAM)
+        assert "changed_file_count" in result
+        assert result["changed_file_count"] == len(result["changed_files"])
+
     def test_plan_lane_with_zero_changes_stays_ok(self, tmp_path: Path) -> None:
         """plan_only is exempt — producing no changes is its whole point."""
         result = self._run(tmp_path, porcelain="", plan_only=True)

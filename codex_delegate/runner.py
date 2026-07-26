@@ -421,6 +421,7 @@ def _delegate_locked(
         "thread_id": run_result.get("thread_id"),
         "usage": run_result.get("usage"),
         "changed_files": changed,
+        "changed_file_count": len(changed),
         "diffstat": diff.get("diffstat") or "",
         # New files are absent from `diff --stat HEAD`; without this a lane that
         # only created files shows an empty diffstat next to a non-empty
