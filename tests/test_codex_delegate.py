@@ -3063,3 +3063,117 @@ class TestStartPollHandlersRound7:
     def test_start_and_poll_are_registered_tools(self) -> None:
         names = {t["name"] for t in server_mod._tool_schemas()}
         assert {"codex_delegate_start", "codex_delegate_poll"} <= names
+
+
+class TestBackgroundLaneBusyRound7:
+    """Background start/poll must honour the same per-lane lock as the sync path.
+
+    Two concurrent ``codex_delegate_start`` calls for one lane must not both
+    proceed; the second surfaces ``LANE_BUSY``. Distinct lanes still run in
+    parallel.
+    """
+
+    def setup_method(self) -> None:
+        jobs.reset_jobs_for_tests()
+        reset_locks_for_tests()
+
+    def teardown_method(self) -> None:
+        jobs.reset_jobs_for_tests()
+        reset_locks_for_tests()
+
+    def _scripted(self, repo: Path):
+        """Git that lets prepare_worktree actually succeed.
+
+        ScriptedGit({}) is not enough: prep fails before the executor is ever
+        spawned, so nothing holds the lane and the test proves nothing.
+        """
+        def worktree_add(tokens: list[str], cwd: Any, timeout: float) -> dict[str, Any]:
+            bi = tokens.index("-b")
+            Path(tokens[bi + 2]).mkdir(parents=True, exist_ok=True)
+            return _git_ok()
+
+        return ScriptedGit({
+            "--version": _git_ok("git version 2.40.0"),
+            "rev-parse --verify": _git_ok("abc"),
+            "status --porcelain": _git_ok(""),
+            "worktree add": worktree_add,
+            "diff --name-only": _git_ok(""),
+            "diff --stat": _git_ok(""),
+        })
+
+    def _start(self, repo: Path, lane: str, runner: Any) -> dict[str, Any]:
+        return handle_tool_call(
+            "codex_delegate_start",
+            {"goal": "work the lane", "lane": lane},
+            repo_root=repo,
+            allowed_roots=[repo],
+            git_runner=self._scripted(repo),
+            subprocess_runner=runner,
+            which=lambda _n: "codex",
+        )
+
+    def test_second_start_same_lane_surfaces_lane_busy(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lanes = tmp_path / "lanes"
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocking_sub(
+            args: Sequence[str],
+            cwd: Any,
+            timeout: float,
+            *,
+            input_text: Optional[str] = None,
+        ) -> dict[str, Any]:
+            del input_text
+            entered.set()
+            assert release.wait(10), "first job was never released"
+            out = dict(_proc(stdout=PROBE_A_REFUSAL_STREAM, returncode=0))
+            out["args"] = list(args)
+            return out
+
+        with mock.patch.dict(
+            os.environ, {"CODEX_DELEGATE_LANES_PARENT": str(lanes)}, clear=False
+        ):
+            first = self._start(repo, "shared", blocking_sub)
+            assert first.get("ok") is True, first
+            assert entered.wait(5), "first job never reached the executor"
+
+            second = self._start(
+                repo,
+                "shared",
+                CapturingSubprocess(_proc(stdout=PROBE_A_REFUSAL_STREAM, returncode=0)),
+            )
+
+            # The lock lives inside delegate(), so the collision surfaces on the
+            # job rather than on the start response: start only pre-validates.
+            assert second.get("ok") is True, second
+            rec = _await_terminal(second["job_id"])
+            err = rec.get("error") or (rec.get("result") or {}).get("error")
+            assert err == "LANE_BUSY", rec
+
+            release.set()
+            _await_terminal(first["job_id"])
+
+    def test_starts_on_different_lanes_both_run(self, tmp_path: Path) -> None:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lanes = tmp_path / "lanes"
+        capt_a = CapturingSubprocess(_proc(stdout=PROBE_A_REFUSAL_STREAM, returncode=0))
+        capt_b = CapturingSubprocess(_proc(stdout=PROBE_A_REFUSAL_STREAM, returncode=0))
+
+        with mock.patch.dict(
+            os.environ, {"CODEX_DELEGATE_LANES_PARENT": str(lanes)}, clear=False
+        ):
+            a = self._start(repo, "alpha", capt_a)
+            b = self._start(repo, "beta", capt_b)
+            assert a.get("ok") is True, a
+            assert b.get("ok") is True, b
+            rec_a = _await_terminal(a["job_id"])
+            rec_b = _await_terminal(b["job_id"])
+
+        for rec in (rec_a, rec_b):
+            assert rec["state"] in jobs.TERMINAL_STATES, rec
+            err = rec.get("error") or (rec.get("result") or {}).get("error")
+            assert err != "LANE_BUSY", rec
