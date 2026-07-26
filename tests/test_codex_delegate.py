@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Optional, Sequence
@@ -58,7 +59,9 @@ from codex_delegate.guard import (
     validate_session_id,
     validate_timeout,
 )
+from codex_delegate import jobs
 from codex_delegate import lane_lock
+from codex_delegate import server as server_mod
 from codex_delegate.lane_lock import reset_locks_for_tests, try_acquire_lane, release_lane
 from codex_delegate.runner import (
     collect_diff,
@@ -1065,7 +1068,7 @@ class TestServerJsonRpc:
         assert resp is not None
         assert resp["result"]["serverInfo"]["name"] == SERVER_NAME
 
-    def test_tools_list_seven_names(self) -> None:
+    def test_tools_list_matches_registry(self) -> None:
         resp = handle_jsonrpc({
             "jsonrpc": "2.0",
             "id": 2,
@@ -1074,7 +1077,10 @@ class TestServerJsonRpc:
         assert resp is not None
         names = sorted(t["name"] for t in resp["result"]["tools"])
         assert names == sorted(TOOL_NAMES)
-        assert len(names) == 7
+        # Round 7 added start/poll; the count follows the registry, not a literal.
+        assert len(names) == len(TOOL_NAMES)
+        assert "codex_delegate_start" in names
+        assert "codex_delegate_poll" in names
 
     def test_delegate_schemas_have_no_resume(self) -> None:
         resp = handle_jsonrpc({
@@ -2847,3 +2853,207 @@ class TestUntrackedStatRound6:
 
         assert diff["untracked_stat"] == ""
         assert not any("--no-index" in c for c in git.calls)
+
+
+def _await_terminal(job_id: str, timeout: float = 10.0) -> dict:
+    """Block until the job leaves running, then return its record."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        rec = jobs.snapshot(job_id)
+        if rec is not None and rec["state"] in jobs.TERMINAL_STATES:
+            return rec
+        time.sleep(0.01)
+    raise AssertionError(f"job {job_id} never reached a terminal state")
+
+
+class TestJobsRegistryRound7:
+    """Background job registry behind codex_delegate_start / _poll."""
+
+    def setup_method(self) -> None:
+        jobs.reset_jobs_for_tests()
+
+    def teardown_method(self) -> None:
+        jobs.reset_jobs_for_tests()
+
+    def test_start_returns_before_the_work_finishes(self) -> None:
+        release = threading.Event()
+        began = time.time()
+
+        def slow() -> dict:
+            release.wait(10)
+            return {"ok": True}
+
+        handle = jobs.start_job(slow, lane="codex/x", tool="t")
+
+        assert handle["state"] == jobs.STATE_RUNNING
+        assert time.time() - began < 2.0, "start_job blocked on the work"
+        assert jobs.snapshot(handle["job_id"])["state"] == jobs.STATE_RUNNING
+        release.set()
+
+    def test_completed_job_reports_done_with_its_result(self) -> None:
+        handle = jobs.start_job(lambda: {"ok": True, "changed_files": ["a.py"]}, lane="l", tool="t")
+        rec = _await_terminal(handle["job_id"])
+        assert rec["state"] == jobs.STATE_DONE
+        assert rec["result"]["changed_files"] == ["a.py"]
+
+    def test_failed_envelope_reports_error_state(self) -> None:
+        handle = jobs.start_job(lambda: {"ok": False, "error": "BASE_DIRTY"}, lane="l", tool="t")
+        rec = _await_terminal(handle["job_id"])
+        assert rec["state"] == jobs.STATE_ERROR
+        assert rec["error"] == "BASE_DIRTY"
+
+    def test_raising_fn_reports_error_without_a_traceback(self) -> None:
+        def boom() -> dict:
+            raise RuntimeError("no worktree here")
+
+        rec = _await_terminal(jobs.start_job(boom, lane="l", tool="t")["job_id"])
+        assert rec["state"] == jobs.STATE_ERROR
+        assert rec["error"] == "RuntimeError: no worktree here"
+        # A traceback would leak host paths into an MCP response.
+        assert "Traceback" not in str(rec["error"])
+
+    def test_non_dict_return_is_an_error_not_a_crash(self) -> None:
+        rec = _await_terminal(jobs.start_job(lambda: "nope", lane="l", tool="t")["job_id"])
+        assert rec["state"] == jobs.STATE_ERROR
+        assert "expected dict" in rec["error"]
+
+    def test_unknown_job_is_none_not_an_exception(self) -> None:
+        assert jobs.snapshot("job-does-not-exist") is None
+
+    def test_finished_job_snapshot_is_stable(self) -> None:
+        handle = jobs.start_job(lambda: {"ok": True, "n": 1}, lane="l", tool="t")
+        first = _await_terminal(handle["job_id"])
+        assert first == jobs.snapshot(handle["job_id"]), "a finished job must read the same twice"
+
+    def test_snapshot_is_a_copy(self) -> None:
+        handle = jobs.start_job(lambda: {"ok": True}, lane="l", tool="t")
+        rec = _await_terminal(handle["job_id"])
+        rec["state"] = "tampered"
+        assert jobs.snapshot(handle["job_id"])["state"] == jobs.STATE_DONE
+
+    def test_eviction_drops_finished_jobs_and_keeps_running_ones(self) -> None:
+        release = threading.Event()
+
+        def keep_running() -> dict:
+            release.wait(10)
+            return {"ok": True}
+
+        keeper = jobs.start_job(keep_running, lane="keep", tool="t")
+        for _ in range(jobs.MAX_JOBS + 10):
+            _await_terminal(jobs.start_job(lambda: {"ok": True}, lane="l", tool="t")["job_id"])
+        assert jobs.snapshot(keeper["job_id"]) is not None, "a running job was evicted"
+        assert len(jobs.list_jobs(limit=jobs.MAX_JOBS)) <= jobs.MAX_JOBS
+        release.set()
+
+    def test_list_jobs_is_newest_first_and_bounded(self) -> None:
+        ids = [
+            jobs.start_job(lambda: {"ok": True}, lane=f"l{i}", tool="t")["job_id"]
+            for i in range(5)
+        ]
+        for jid in ids:
+            _await_terminal(jid)
+        listed = jobs.list_jobs(limit=3)
+        assert len(listed) == 3
+        assert [r["job_id"] for r in listed] == list(reversed(ids))[:3]
+        assert "result" not in listed[0], "list must stay compact"
+
+
+class TestStartPollHandlersRound7:
+    """The MCP surface of detached delegation."""
+
+    def setup_method(self) -> None:
+        jobs.reset_jobs_for_tests()
+
+    def teardown_method(self) -> None:
+        jobs.reset_jobs_for_tests()
+
+    def _repo(self, tmp_path: Path):
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        lanes = tmp_path / "lanes"
+        lanes.mkdir()
+        return repo, lanes
+
+    def test_poll_unknown_job_is_structured_not_raised(self) -> None:
+        result = handle_tool_call("codex_delegate_poll", {"job_id": "job-nope"})
+        assert result["ok"] is False
+        assert result["error"] == "JOB_UNKNOWN"
+
+    def test_poll_without_job_id_lists(self) -> None:
+        jobs.start_job(lambda: {"ok": True}, lane="codex/l", tool="codex_delegate_start")
+        result = handle_tool_call("codex_delegate_poll", {})
+        assert result["ok"] is True
+        assert isinstance(result["jobs"], list)
+
+    def test_rejected_request_never_becomes_a_job(self, tmp_path: Path) -> None:
+        repo, _lanes = self._repo(tmp_path)
+        result = handle_tool_call(
+            "codex_delegate_start",
+            {"goal": "g", "lane": "dev"},
+            repo_root=repo,
+            allowed_roots=[repo],
+        )
+        # Guards run on the request path: a reserved lane must fail visibly, not
+        # become a job whose failure the caller has to poll to discover.
+        assert result["ok"] is False
+        assert result["error"] == "LANE_RESERVED"
+        assert "job_id" not in result
+        assert jobs.list_jobs() == []
+
+    def test_start_then_poll_carries_the_envelope(self, tmp_path: Path) -> None:
+        repo, lanes = self._repo(tmp_path)
+        capt = CapturingSubprocess(_proc(stdout=PROBE_A_REFUSAL_STREAM, returncode=0))
+        with mock.patch.dict(
+            os.environ, {"CODEX_DELEGATE_LANES_PARENT": str(lanes)}, clear=False
+        ):
+            started = handle_tool_call(
+                "codex_delegate_start",
+                {"goal": "write a file", "lane": "async-lane"},
+                repo_root=repo,
+                allowed_roots=[repo],
+                git_runner=ScriptedGit({}),
+                subprocess_runner=capt,
+                which=lambda _n: "codex",
+            )
+            assert started["ok"] is True, started
+            assert started["poll_with"] == "codex_delegate_poll"
+            _await_terminal(started["job_id"])
+            polled = handle_tool_call("codex_delegate_poll", {"job_id": started["job_id"]})
+
+        assert polled["state"] in jobs.TERMINAL_STATES
+        assert polled["lane"] == "codex/async-lane"
+        assert isinstance(polled["result"], dict), polled
+        assert "ok" in polled["result"]
+
+    def test_second_poll_of_a_finished_job_is_identical(self) -> None:
+        handle = jobs.start_job(lambda: {"ok": True, "x": 1}, lane="codex/l", tool="t")
+        _await_terminal(handle["job_id"])
+        first = handle_tool_call("codex_delegate_poll", {"job_id": handle["job_id"]})
+        second = handle_tool_call("codex_delegate_poll", {"job_id": handle["job_id"]})
+        assert first == second
+
+    def test_background_argv_carries_no_forbidden_flag(self, tmp_path: Path) -> None:
+        repo, lanes = self._repo(tmp_path)
+        capt = CapturingSubprocess(_proc(stdout=PROBE_A_REFUSAL_STREAM, returncode=0))
+        with mock.patch.dict(
+            os.environ, {"CODEX_DELEGATE_LANES_PARENT": str(lanes)}, clear=False
+        ):
+            started = handle_tool_call(
+                "codex_delegate_start",
+                {"goal": "g", "lane": "guarded"},
+                repo_root=repo,
+                allowed_roots=[repo],
+                git_runner=ScriptedGit({}),
+                subprocess_runner=capt,
+                which=lambda _n: "codex",
+            )
+            _await_terminal(started["job_id"])
+
+        for call in capt.calls:
+            argv = [str(a) for a in call["args"]]
+            assert not any(a.startswith("--dangerously") for a in argv), argv
+            assert "danger-full-access" not in argv, argv
+
+    def test_start_and_poll_are_registered_tools(self) -> None:
+        names = {t["name"] for t in server_mod._tool_schemas()}
+        assert {"codex_delegate_start", "codex_delegate_poll"} <= names
