@@ -2,19 +2,22 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any, Optional
 
 try:
-    from .guard import structured_error
+    from .guard import GuardError, structured_error
     from .lane_lock import repo_git_lock
     from .process import GitRunner, default_git_runner
 except ImportError:  # pragma: no cover
-    from guard import structured_error
+    from guard import GuardError, structured_error
     from lane_lock import repo_git_lock
     from process import GitRunner, default_git_runner
 
 _TRUNC_DIFFSTAT = 8000
+# One `diff --no-index` spawn per new file; cap the fan-out on a large lane.
+_MAX_UNTRACKED_STAT = 50
 
 # C-style escapes used by git when core.quotePath quotes a path.
 _GIT_SIMPLE_ESCAPES = {
@@ -278,6 +281,7 @@ def collect_diff(
         }
 
     files: set[str] = set()
+    untracked: list[str] = []
     for line in (name_only.get("stdout") or "").splitlines():
         name = decode_git_path(line.strip())
         if name:
@@ -286,6 +290,7 @@ def collect_diff(
         if not line:
             continue
         # porcelain v1: XY + space + path (path may be quoted / rename pair).
+        status_code = line[:2]
         entry = line[3:] if len(line) >= 3 else line
         entry = entry.strip()
         if " -> " in entry:
@@ -293,6 +298,8 @@ def collect_diff(
         entry = decode_git_path(entry)
         if entry:
             files.add(entry)
+            if status_code == "??":
+                untracked.append(entry)
 
     ordered = sorted(files)
     return {
@@ -300,4 +307,45 @@ def collect_diff(
         "changed_files": ordered,
         "changed_file_count": len(ordered),
         "diffstat": _truncate((stat.get("stdout") or "").strip(), _TRUNC_DIFFSTAT),
+        "untracked_stat": _untracked_stat(git, wt, timeout, sorted(untracked)),
     }
+
+
+def _untracked_stat(
+    git: GitRunner,
+    wt: Path,
+    timeout: float,
+    untracked: list[str],
+) -> str:
+    """Per-file stat for newly created files, which `diff --stat HEAD` omits.
+
+    Without this a lane whose only change is a new file reports a non-empty
+    ``changed_files`` next to an empty ``diffstat``; a caller reading the stat
+    alone concludes nothing happened. Computed with ``diff --no-index`` against
+    the null device, so the index is never touched and no forbidden git verb
+    (``reset``, ``clean``) is needed. Any failure degrades to an empty string:
+    a missing stat must not turn a successful lane into an error.
+    """
+    if not untracked:
+        return ""
+
+    lines: list[str] = []
+    shown = untracked[:_MAX_UNTRACKED_STAT]
+    for name in shown:
+        try:
+            res = git(["diff", "--no-index", "--stat", "--", os.devnull, name], wt, timeout)
+        except (OSError, GuardError):
+            continue
+        for line in (res.get("stdout") or "").splitlines():
+            line = line.rstrip()
+            # Keep the per-file rows, drop git's own "N files changed" summary:
+            # it counts this one call, not the lane.
+            if "|" in line:
+                # `diff --no-index` labels the row "nul => name"; the arrow is an
+                # artefact of the comparison, not a rename.
+                lines.append(line.replace(f"{os.devnull} => ", "", 1))
+
+    omitted = len(untracked) - len(shown)
+    if omitted > 0:
+        lines.append(f" ... {omitted} more new file(s) not shown")
+    return _truncate("\n".join(lines), _TRUNC_DIFFSTAT)
