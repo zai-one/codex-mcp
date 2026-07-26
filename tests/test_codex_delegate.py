@@ -2774,3 +2774,76 @@ class TestHonestyInvariantsRound5:
         assert result["ok"] is False
         assert result["error"] == "EXECUTE_NO_CHANGES"
 
+
+
+class TestUntrackedStatRound6:
+    """A lane whose only change is a new file must not read as 'nothing happened'.
+
+    `git diff --stat HEAD` omits untracked files, so before round 6 such a lane
+    returned a non-empty changed_files next to an empty diffstat — measured on a
+    live run (round 6, REPRO.md).
+    """
+
+    def _scripted(self, stat_result: Any) -> ScriptedGit:
+        return ScriptedGit({
+            "diff --name-only": _git_ok(""),
+            "status --porcelain": _git_ok("?? new.md\n"),
+            "diff --stat": _git_ok(""),
+            "diff --no-index --stat": stat_result,
+        })
+
+    def test_new_file_is_visible_in_untracked_stat(self, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        git = self._scripted(_git_ok(f" {os.devnull} => new.md | 1 +\n 1 file changed, 1 insertion(+)"))
+
+        diff = collect_diff(wt, git_runner=git)
+
+        assert diff["changed_files"] == ["new.md"]
+        assert diff["diffstat"] == ""          # git's own answer, unchanged
+        assert "new.md" in diff["untracked_stat"]
+        # The null-device label is a comparison artefact, not a rename.
+        assert "=>" not in diff["untracked_stat"]
+        # git's per-call summary must not be mistaken for the lane's total.
+        assert "1 file changed" not in diff["untracked_stat"]
+
+    def test_index_is_never_mutated(self, tmp_path: Path) -> None:
+        """The stat must not be bought with `add -N`/`reset`: `reset` is a
+        forbidden verb, and staging would change what the lane reports next."""
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        git = self._scripted(_git_ok(f" {os.devnull} => new.md | 1 +"))
+
+        collect_diff(wt, git_runner=git)
+
+        verbs = {c[0] for c in git.calls if c}
+        assert "add" not in verbs
+        assert "reset" not in verbs
+
+    def test_guard_error_degrades_to_empty_not_raise(self, tmp_path: Path) -> None:
+        """collect_diff never raises; a refused git call costs the stat, not the lane."""
+        wt = tmp_path / "wt"
+        wt.mkdir()
+
+        def boom(tokens: Sequence[str], cwd: Any, timeout: float) -> dict[str, Any]:
+            raise GuardError("GIT_VERB_FORBIDDEN", "nope")
+
+        diff = collect_diff(wt, git_runner=self._scripted(boom))
+
+        assert diff["ok"] is True
+        assert diff["changed_files"] == ["new.md"]
+        assert diff["untracked_stat"] == ""
+
+    def test_no_untracked_means_no_extra_git_calls(self, tmp_path: Path) -> None:
+        wt = tmp_path / "wt"
+        wt.mkdir()
+        git = ScriptedGit({
+            "diff --name-only": _git_ok("tracked.md\n"),
+            "status --porcelain": _git_ok(" M tracked.md\n"),
+            "diff --stat": _git_ok(" tracked.md | 2 +-"),
+        })
+
+        diff = collect_diff(wt, git_runner=git)
+
+        assert diff["untracked_stat"] == ""
+        assert not any("--no-index" in c for c in git.calls)

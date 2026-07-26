@@ -422,6 +422,10 @@ def _delegate_locked(
         "usage": run_result.get("usage"),
         "changed_files": changed,
         "diffstat": diff.get("diffstat") or "",
+        # New files are absent from `diff --stat HEAD`; without this a lane that
+        # only created files shows an empty diffstat next to a non-empty
+        # changed_files.
+        "untracked_stat": diff.get("untracked_stat") or "",
     }
     if no_changes:
         out["error"] = "EXECUTE_NO_CHANGES"

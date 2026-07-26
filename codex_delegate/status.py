@@ -444,6 +444,7 @@ def _maybe_add_lane(
         "changed_files": diff.get("changed_files") or [],
         "changed_file_count": len(diff.get("changed_files") or []),
         "diffstat": diff.get("diffstat") or "",
+        "untracked_stat": diff.get("untracked_stat") or "",
     })
 
 
