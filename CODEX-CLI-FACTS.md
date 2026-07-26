@@ -124,7 +124,39 @@ Measured with stdin already at `DEVNULL` (so this is not a stdin-inheritance art
 `DOCTOR_TIMEOUT_SECONDS` (≤ 60s) and returns structured `DOCTOR_TIMEOUT` on expiry.
 Do not raise this bound without a new live measurement.
 
-## `-s workspace-write` is NOT reliable on this host (2026-07-25, integrator)
+## `-s workspace-write` needs the user `config.toml` (corrected 2026-07-26, round 6)
+
+**The 2026-07-25 reading below was wrong, and it shaped rounds 1–5.** It is kept verbatim because
+the observations are real; only the conclusion was.
+
+Root cause: `--ignore-user-config`, which every failing probe below carries. It discards
+`~/.codex/config.toml`, and that file sets:
+
+```toml
+[windows]
+sandbox = "elevated"
+```
+
+Without it Codex cannot establish a write-capable sandbox on Windows and degrades to read-only.
+Same repo, same lane, same goal, on `codex-cli 0.144.1`, one flag apart:
+
+```
+CODEX_DELEGATE_IGNORE_USER_CONFIG=1 -> ok:false EXECUTE_NO_CHANGES changed_file_count:0  11.2s
+CODEX_DELEGATE_IGNORE_USER_CONFIG=0 -> ok:true                     changed_file_count:1  72.9s
+```
+
+Repeat run at the same settings: `ok:true`, 27.8s — reproducible, not a fluke. The lane sat at
+`D:\ZAI\MCP\codex-lanes\...`, a path absent from every `trust_level = "trusted"` entry, so project
+trust is **not** the mechanism; `[windows] sandbox` is.
+
+This also answers the question left open below: probe C ran **without** `--ignore-user-config`.
+
+The feature-flag signal quoted further down (`elevated_windows_sandbox … removed`) is still true
+today and is **not** the cause — writes succeed with those same flags retired.
+
+---
+
+### Original 2026-07-25 entry (conclusion superseded, observations intact)
 
 Probe C below did grant writes earlier the same day. Hours later, on the **same** `codex-cli
 0.144.1`, **the same command shape, in the same directory**, every write is refused:
@@ -161,11 +193,16 @@ Consistent reading: when Codex cannot establish a write-capable sandbox on Windo
 read-only rather than running unsandboxed. **Why probe C succeeded earlier is not explained** — do
 not invent a story for it; treat write capability as something to re-verify per session.
 
+> **Round 6 correction.** The degradation is real, but its trigger is `--ignore-user-config`, not
+> the build. Probe C succeeded because it ran without that flag. Every probe in this section carries
+> it — that is the variable nobody isolated. See the corrected heading above.
+
 Consequence for `codex_delegate`: the read-only tools (`_plan`, `_review`, `_status`, `_models`,
-`_lanes`) work; the **execute** path cannot produce changes while this holds. `delegate()` now
-reports that honestly instead of returning `ok:true` with an empty diff — see
-`EXECUTE_NO_CHANGES`. The only flag that would bypass the sandbox is
-`--dangerously-bypass-approvals-and-sandbox`, which this package forbids everywhere.
+`_lanes`) work regardless. The **execute** path produces changes when the server runs with
+`CODEX_DELEGATE_IGNORE_USER_CONFIG=0`; with the historical default `1` it cannot, and `delegate()`
+reports that honestly instead of returning `ok:true` with an empty diff — see `EXECUTE_NO_CHANGES`.
+The only flag that would bypass the sandbox is `--dangerously-bypass-approvals-and-sandbox`, which
+this package forbids everywhere and which is **not** needed for any of this.
 
 ## Sandbox behaviour — measured, not assumed
 
