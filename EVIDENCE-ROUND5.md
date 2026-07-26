@@ -1,5 +1,11 @@
 # EVIDENCE-ROUND5 — полный поверхностный аудит
 
+> **Раунд 6 отменил посылку этого раунда.** «Запись невозможна по вендорской причине» — неверно;
+> причиной был наш собственный `--ignore-user-config`. Соответственно раздел «Что остаётся
+> неизвестным», пункт 1, закрыт: `codex exec` под `-s workspace-write` **пишет**, если сервер
+> запущен с `CODEX_DELEGATE_IGNORE_USER_CONFIG=0`. Всё остальное в этом документе остаётся в силе.
+> См. [`EVIDENCE-ROUND6.md`](EVIDENCE-ROUND6.md).
+
 Дата: 2026-07-25  
 Ветка lane: `grok/codexmcp-r5`  
 Спека: [`GOAL-ROUND5-FULL-AUDIT.md`](GOAL-ROUND5-FULL-AUDIT.md)  
