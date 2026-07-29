@@ -1,184 +1,90 @@
-# codex_delegate — governed MCP-делегация в Codex CLI
+# Codex app-server MCP
 
-Dev-only stdio MCP-сервер: оркестратор (например Claude) передаёт coding-цель
-**локальному Codex CLI** (`codex exec`) в изолированном git worktree ветки
-`codex/*` и получает обратно ветку + diffstat. Без push, без merge, без обхода
-sandbox/approvals.
+Управляемый MCP/HTTP gateway для полного управления Codex через
+`codex app-server`. Старый runtime на `codex exec` удалён: все рабочие
+операции теперь выполняются через persistent app-server connection.
 
-## Два сервера — не путать
+Важно: установленный бинарник `codex` остаётся обязательным. Gateway запускает
+`codex app-server`; удалён только прежний пакет `codex_delegate`.
 
-| Канал | Что это | Зачем |
-|---|---|---|
-| `codex mcp-server` | встроенный MCP Codex CLI | консультации/сессии «внутри» Codex |
-| `codex_delegate` (этот репозиторий) | governed delegation surface | отдать goal во **внешний** headless `codex exec` в отдельном worktree |
+## Возможности
 
-`codex_delegate` **не** управляет MCP-серверами Codex, не логинит, не пушит и
-не мержит. Это только локальный канал делегирования для dev-оркестратора.
+- persistent threads, turns, steering, interrupt, fork, archive и rollback;
+- persisted autonomous goals с token budget и terminal statuses;
+- live model catalog и выбор reasoning effort;
+- native review, shell commands, command sessions и filesystem v2;
+- события, approvals, user input, dynamic tools и server requests;
+- durable background jobs в SQLite;
+- timezone-aware RRULE schedules с idempotency, retry и misfire policy;
+- изолированные git worktree lanes вместо `codex exec`;
+- динамический каталог exact schema конкретного бинарника;
+- typed account/config/plugin/environment/search/memory/realtime/remote control;
+- downstream MCP/SaaS tools через server/tool allowlists;
+- полный forward-compatible app-server RPC с operator allowlist;
+- stdio MCP и bearer-защищённый Streamable HTTP;
+- app-server doctor и secret-safe JSONL audit.
+- overload backoff, runtime metrics и явный restart app-server.
 
-## Быстрый старт
+Полный контракт, конфигурация и примеры:
+[codex_app_mcp/README.md](codex_app_mcp/README.md).
+
+Матрица переноса старого API:
+[APP-SERVER-MCP-MIGRATION.md](APP-SERVER-MCP-MIGRATION.md).
+
+Исследование и доказательства:
+
+- [APP-SERVER-MCP-RESEARCH.md](APP-SERVER-MCP-RESEARCH.md)
+- [APP-SERVER-MCP-VERIFICATION.md](APP-SERVER-MCP-VERIFICATION.md)
+
+## Установка и запуск
 
 ```powershell
-# зависимости: Python 3.10+, git, codex-cli на PATH, pytest для тестов
+cd "D:\ZAI\MCP\Codex CLI"
+py -3 -m pip install -e ".[test]"
+
+$env:CODEX_APP_MCP_ALLOWED_ROOTS = "D:\Projects;D:\Work"
+$env:CODEX_APP_MCP_ALLOW_FULL_ACCESS = "1"
+$env:CODEX_APP_MCP_DEFAULT_SANDBOX = "danger-full-access"
+$env:CODEX_APP_MCP_DEFAULT_APPROVAL_POLICY = "never"
+
+# MCP stdio
+py -3 -m codex_app_mcp
+
+# HTTP service
+$env:CODEX_APP_MCP_HTTP_TOKEN = "<long-random-secret>"
+py -3 -m codex_app_mcp --transport http --host 127.0.0.1 --port 8765
+```
+
+`danger-full-access` задаётся либо как default выше, либо полем
+`"sandbox": "danger-full-access"` в `thread`, `turn`, `lane` и `command`.
+Gateway никогда не включает его скрыто: требуется
+`CODEX_APP_MCP_ALLOW_FULL_ACCESS=1`.
+
+Для stateful/raw RPC и мутирующих filesystem операций отдельно требуется:
+
+```powershell
+$env:CODEX_APP_MCP_ALLOW_UNSAFE_RPC = "1"
+$env:CODEX_APP_MCP_ALLOWED_RPC_METHODS = "*"
+```
+
+`*` удобно для доверенного локального control plane. Для внешнего SaaS лучше
+перечислить методы явно.
+
+## Проверка
+
+```powershell
 py -3 -m pytest tests -q
-py -3 -m codex_delegate --self-test
-py -3 -m codex_delegate --smoke-delegate   # реальный plan-only прогон
+py -3 -m compileall -q codex_app_mcp scripts
+py -3 scripts\check_app_server_protocol.py
+py -3 scripts\audit_app_server_coverage.py
+py -3 scripts\codex_app_mcp_stdio_probe.py
+py -3 scripts\codex_app_mcp_http_probe.py
 ```
 
-### Провод в `claude_desktop_config.json`
+Полный live probe с реальными записью, turn, shell, review и lane:
 
-Форма ниже проверена запуском: абсолютный путь к интерпретатору + абсолютный
-путь к `server.py`, без опоры на `cwd` (пакет поднимает себя сам через
-dual-import, прогнано из чужого рабочего каталога).
-
-```json
-{
-  "mcpServers": {
-    "codex-delegate": {
-      "command": "C:\\Users\\<you>\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
-      "args": ["C:\\path\\to\\Codex CLI\\codex_delegate\\server.py"],
-      "env": {
-        "CODEX_DELEGATE_ALLOWED_ROOTS": "C:\\path\\to\\your-repo",
-        "CODEX_DELEGATE_LANES_PARENT": "C:\\path\\to\\codex-lanes",
-        "CODEX_DELEGATE_IGNORE_USER_CONFIG": "1"
-      }
-    }
-  }
-}
+```powershell
+$env:CODEX_APP_MCP_ALLOW_FULL_ACCESS = "1"
+$env:CODEX_APP_MCP_ALLOW_UNSAFE_RPC = "1"
+py -3 scripts\codex_app_mcp_full_live_probe.py
 ```
-
-Бинарник Codex **не** передаётся клиентом — только через `CODEX_DELEGATE_BIN`
-или PATH. Пустой `CODEX_DELEGATE_ALLOWED_ROOTS` = fail closed
-(`ALLOWED_ROOTS_EMPTY`), делегация никуда не поедет.
-
-## Переменные окружения
-
-| Переменная | Смысл | По умолчанию |
-|---|---|---|
-| `CODEX_DELEGATE_BIN` | имя/путь бинарника | `codex` |
-| `CODEX_DELEGATE_ALLOWED_ROOTS` | абсолютные корни через `;` или JSON-массив | пусто → fail closed |
-| `CODEX_DELEGATE_REPO_ROOT` | один корень, fallback | — |
-| `CODEX_DELEGATE_LANES_PARENT` | родитель worktree | `<repo>.parent/codex-lanes` |
-| `CODEX_DELEGATE_BASE_REF` | базовый ref | `HEAD` |
-| `CODEX_DELEGATE_MODEL` | модель по умолчанию | — |
-| `CODEX_DELEGATE_REASONING_EFFORT` | effort | — |
-| `CODEX_DELEGATE_TIMEOUT_SECONDS` | таймаут | `900` (cap `3600`) |
-| `CODEX_DELEGATE_IGNORE_USER_CONFIG` | `--ignore-user-config` | **вкл.** |
-| `CODEX_DELEGATE_SELF_TEST_FAIL_ON_SKIP` | `--self-test` падает при любом SKIP | выкл. |
-
-### Зачем `--ignore-user-config` по умолчанию
-
-Операторский `$CODEX_HOME/config.toml` подключает внешние MCP и >130 skills к
-каждой сессии. Делегированная lane должна быть **герметичной** — без Telegram,
-infra-инструментов и desktop-доступа. Auth по-прежнему резолвится из
-`CODEX_HOME`; сервер **никогда** не читает `auth.json`.
-
-## Инструменты MCP
-
-| Tool | Назначение |
-|---|---|
-| `codex_delegate` | выполнить goal в worktree, `-s workspace-write` |
-| `codex_delegate_plan` | plan-only, принудительно `-s read-only` |
-| `codex_delegate_review` | `codex exec review` в существующей lane (cwd = worktree) |
-| `codex_delegate_status` | health JSON |
-| `codex_delegate_doctor` | `codex doctor --json` |
-| `codex_delegate_models` | урезанный каталог `codex debug models` |
-| `codex_delegate_lanes` | список lane `codex/*` |
-
-Схемы клиента **не** содержат `codex_bin`, `add_dir`, raw `config`. Если
-`codex_bin` всё же протащен — `CODEX_BIN_CLIENT_FORBIDDEN`.
-
-## Sandbox (честно, по живым probe)
-
-Факты из [`CODEX-CLI-FACTS.md`](CODEX-CLI-FACTS.md) (codex-cli 0.144.1):
-
-- **Probe A:** default `codex exec` = `read-only`, enforced на Windows.
-- **Probe B:** `-c sandbox_mode=...` **не** меняет sandbox для `exec`; сервер
-  никогда не эмитит этот override.
-- **Probe C:** `-s workspace-write` даёт запись под `--cd`.
-- `danger-full-access` и все `--dangerously-*` запрещены везде.
-- **`resume` fail-closed** (`RESUME_UNSUPPORTED`): `codex exec resume` не принимает
-  `--cd`/`-s`, поэтому sandbox сессии не контролируется — путь отключён.
-- **`exec review`:** без `--cd`/`-s`/`--color`; cwd = worktree; sandbox = default
-  Codex (`read-only`).
-- **`model_reasoning_effort`:** best-effort; CLI **не** валидирует значение — мы
-  проверяем allowlist сами и не обещаем enforcement на стороне бинарника.
-- **`codex doctor --json`:** на этом хосте не возвращается (замер: 277.7s без
-  ответа). Probe ограничен `DOCTOR_TIMEOUT_SECONDS = 45s` и отдаёт
-  `DOCTOR_TIMEOUT`. Важно: одного `subprocess.run(timeout=)` для этого мало —
-  он убивает только прямого потомка, а внуки держат pipe'ы, и замер давал
-  **240s при объявленном лимите 45s**. Поэтому спавн идёт через `Popen` +
-  kill дерева процессов (`taskkill /F /T` на Windows, `killpg` на POSIX);
-  после фикса замер — **45.2s**. В `--self-test` эта строка отображается как
-  `SKIP`, а не `PASS`: отказ вендорского бинарника не выдаётся за здоровье, но
-  и не объявляет сломанным наш сервер. `RESULT: PASS` требует хотя бы один
-  реальный PASS (полный SKIP-прогон — `FAIL`). CI без пропусков:
-  `CODEX_DELEGATE_SELF_TEST_FAIL_ON_SKIP=1`.
-
-## Запись в лейне: нужен пользовательский `config.toml`
-
-**Запись работает.** Раньше здесь стояло, что `-s workspace-write` на этом хосте не даёт записи по
-вендорской причине. Это неверно, и раунды 1–5 строились на ложной посылке.
-
-Настоящая причина — наш собственный дефолт `CODEX_DELEGATE_IGNORE_USER_CONFIG=1`. Он передаёт
-`--ignore-user-config`, чем выбрасывает `~/.codex/config.toml` целиком, а там задано:
-
-```toml
-[windows]
-sandbox = "elevated"
-```
-
-Без этой настройки Codex не поднимает write-capable песочницу на Windows и деградирует в read-only —
-что и наблюдалось. Флаг `-s workspace-write` при этом честно доходит до политики (видно в
-`codex debug prompt-input`), поэтому симптом и выглядел как вендорский отказ.
-
-Измерено 2026-07-26, `codex-cli 0.144.1`, один и тот же репозиторий, лейн и задача; отличался
-единственный флаг:
-
-| `IGNORE_USER_CONFIG` | Итог |
-|---|---|
-| `1` | `ok:false`, `EXECUTE_NO_CHANGES`, `changed_file_count:0`, 11.2s |
-| `0` | `ok:true`, `changed_file_count:1`, 72.9s, файл на диске |
-
-Повторный прогон на той же конфигурации: `ok:true`, 27.8s. Успех воспроизводим, лейн лежал по пути,
-которого нет в списке `trust_level = "trusted"` — значит дело именно в `[windows] sandbox`, а не в
-доверии к проекту.
-
-Это же, по-видимому, объясняет незакрытый вопрос «почему probe C прошёл, а последующие нет»:
-probe C запускался без `--ignore-user-config`.
-
-**Компромисс, который надо принимать осознанно.** С `CODEX_DELEGATE_IGNORE_USER_CONFIG=0` лейн
-наследует пользовательский `config.toml` целиком: модель по умолчанию, `notify`-хук, MCP-серверы.
-Прогоны перестают быть герметичными и начинают зависеть от машины. Обратная сторона `=1` —
-песочница без записи, то есть execute-путь бесполезен. Дефолт остаётся `1` (герметичность), но
-для реальной работы в конфиге MCP-сервера нужно явно ставить `0`.
-
-Что остаётся верным при любом значении флага:
-
-- read-only инструменты (`_plan`, `_review`, `_status`, `_models`, `_lanes`) работают всегда;
-- если запись почему-либо снова окажется невозможна, delegate вернёт `ok:false`,
-  `status: "no_changes"`, `error: "EXECUTE_NO_CHANGES"`, а причину исполнитель опишет в `summary`;
-- `--dangerously-bypass-approvals-and-sandbox` запрещён везде и обходным путём не является.
-
-## Не-цели и жёсткие границы
-
-- Нет `git push` / `merge` / `pull` / `rebase` / `cherry-pick` / `reset` / `clean`.
-- Нет cloud tasks, `codex apply`, MCP/plugin management, login/logout, update.
-- Worktree **никогда** не создаётся внутри основного working tree репозитория.
-- Ошибки всегда structured: `{"ok": false, "error": "<CODE>", "message": "..."}`.
-
-## Структура репозитория
-
-```text
-codex_delegate/     # пакет (вкл. cli_contract.py — immune system R7)
-tests/              # pytest, полностью замокан
-CODEX-CLI-FACTS.md  # единственный источник флагов CLI
-GOAL-ROUND1.md      # спецификация раунда 1
-GOAL-ROUND2-SKEPTIC.md  # skeptic-находки R1..R11
-GOAL-ROUND4-SKEPTIC-DELTA.md  # skeptic по дельте интегратора
-EVIDENCE-ROUND1.md  # что проверено в r1
-EVIDENCE-ROUND2.md  # skeptic-pass и фиксы
-EVIDENCE-ROUND3-INTEGRATOR.md  # гейты/замеры интегратора
-EVIDENCE-ROUND4.md  # skeptic-pass по дельте D1..D4
-```
-
-Подробный контракт пакета: [`codex_delegate/README.md`](codex_delegate/README.md).
