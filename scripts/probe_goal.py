@@ -1,4 +1,4 @@
-"""Opt-in live verification for the installed Codex app-server.
+"""Probe a persisted goal on the installed Codex app-server.
 
 The default mode is read-only. ``--goal`` creates and archives one harmless
 read-only persisted goal and can consume a small number of model tokens.

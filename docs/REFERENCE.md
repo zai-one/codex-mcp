@@ -1,4 +1,4 @@
-# `codex-app-mcp` 0.4.0
+# Codex app-server MCP reference
 
 Production-oriented MCP gateway over the experimental
 `codex app-server` JSON-RPC protocol. It uses one long-lived app-server child,
@@ -31,7 +31,7 @@ codex app-server
 ## Install
 
 ```powershell
-cd "D:\ZAI\MCP\Codex CLI"
+Set-Location "<path-to-repository>"
 py -3 -m pip install -e ".[test]"
 ```
 
@@ -79,7 +79,7 @@ method. Use `*` only inside a trusted local control plane.
     "codex-app": {
       "command": "C:\\Python\\python.exe",
       "args": ["-m", "codex_app_mcp"],
-      "cwd": "D:\\ZAI\\MCP\\Codex CLI",
+      "cwd": "C:\\path\\to\\codex-app-mcp",
       "env": {
         "CODEX_APP_MCP_ALLOWED_ROOTS": "D:\\Projects;D:\\Work",
         "CODEX_APP_MCP_ALLOW_FULL_ACCESS": "1",
@@ -193,8 +193,8 @@ operator action.
 
 ### Schedules
 
-`codex_app_schedule` provides recurrence even though Codex CLI does not expose
-the Desktop Scheduled UI:
+`codex_app_schedule` provides recurrence because app-server does not expose
+the Desktop Scheduled management UI:
 
 ```json
 {
@@ -326,11 +326,11 @@ scheduler ticks, launches, errors, and its last bounded error message.
 ```powershell
 py -3 -m pytest tests -q
 py -3 -m compileall -q codex_app_mcp scripts
-py -3 scripts\check_app_server_protocol.py
-py -3 scripts\audit_app_server_coverage.py
-py -3 scripts\codex_app_mcp_stdio_probe.py
-py -3 scripts\codex_app_mcp_http_probe.py
-py -3 scripts\codex_app_mcp_full_live_probe.py
+py -3 scripts\check_protocol.py
+py -3 scripts\audit_protocol.py
+py -3 scripts\probe_stdio.py
+py -3 scripts\probe_http.py
+py -3 scripts\probe_full.py
 ```
 
 The full probe creates a temporary repository, performs real

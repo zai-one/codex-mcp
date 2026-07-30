@@ -1,4 +1,4 @@
-# Codex app-server → MCP: исследование
+# Исследование Codex app-server → MCP
 
 Срез: 29 июля 2026 года. Проверены release binaries `0.145.0`, `0.146.0`,
 официальная документация и schema snapshot GitHub `main`.

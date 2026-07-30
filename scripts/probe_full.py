@@ -1,4 +1,4 @@
-"""Destructive-in-temp, full-access live matrix for codex-app-mcp.
+"""Destructive-in-temp full-access live matrix.
 
 The caller should point CODEX_HOME at an isolated authenticated profile. The
 probe mutates only a newly-created temporary directory and deletes only threads

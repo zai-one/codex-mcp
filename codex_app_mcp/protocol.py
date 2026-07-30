@@ -57,8 +57,8 @@ def _methods(document: Mapping[str, Any]) -> dict[str, dict[str, Any]]:
 class ProtocolRegistry:
     """Generate and cache schemas from the configured executable.
 
-    Schema generation is a read-only Codex CLI operation. Runtime control still
-    goes exclusively through the long-lived app-server JSON-RPC connection.
+    Schema generation is a read-only binary subcommand. Runtime control goes
+    exclusively through the long-lived app-server JSON-RPC connection.
     """
 
     def __init__(self, codex_bin: str = "codex", *, ttl_seconds: float = 300.0) -> None:

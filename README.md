@@ -1,90 +1,105 @@
 # Codex app-server MCP
 
-Управляемый MCP/HTTP gateway для полного управления Codex через
-`codex app-server`. Старый runtime на `codex exec` удалён: все рабочие
-операции теперь выполняются через persistent app-server connection.
+Production-oriented MCP gateway for managing Codex through one persistent
+`codex app-server` process. The former `codex exec`/`codex_delegate` runtime is
+not part of this repository.
 
-Важно: установленный бинарник `codex` остаётся обязательным. Gateway запускает
-`codex app-server`; удалён только прежний пакет `codex_delegate`.
+The installed `codex` binary remains a runtime dependency because it provides
+`codex app-server`.
 
-## Возможности
+## Capabilities
 
-- persistent threads, turns, steering, interrupt, fork, archive и rollback;
-- persisted autonomous goals с token budget и terminal statuses;
-- live model catalog и выбор reasoning effort;
-- native review, shell commands, command sessions и filesystem v2;
-- события, approvals, user input, dynamic tools и server requests;
-- durable background jobs в SQLite;
-- timezone-aware RRULE schedules с idempotency, retry и misfire policy;
-- изолированные git worktree lanes вместо `codex exec`;
-- динамический каталог exact schema конкретного бинарника;
-- typed account/config/plugin/environment/search/memory/realtime/remote control;
-- downstream MCP/SaaS tools через server/tool allowlists;
-- полный forward-compatible app-server RPC с operator allowlist;
-- stdio MCP и bearer-защищённый Streamable HTTP;
-- app-server doctor и secret-safe JSONL audit.
-- overload backoff, runtime metrics и явный restart app-server.
+- threads, turns, steering, interrupt, fork, archive and rollback;
+- autonomous persisted goals with model, reasoning effort and token budget;
+- native review, command sessions, filesystem v2 and unsandboxed `process/*`;
+- approvals, user input, dynamic tools and server-initiated requests;
+- durable SQLite jobs, worktree lanes and timezone-aware RRULE schedules;
+- typed access to all methods in the configured experimental schema;
+- downstream MCP/SaaS calls with server and tool allowlists;
+- stdio MCP and bearer-protected HTTP;
+- exact-schema introspection, audit, metrics, retry and recovery.
 
-Полный контракт, конфигурация и примеры:
-[codex_app_mcp/README.md](codex_app_mcp/README.md).
+## Repository
 
-Матрица переноса старого API:
-[APP-SERVER-MCP-MIGRATION.md](APP-SERVER-MCP-MIGRATION.md).
+```text
+codex_app_mcp/   runtime package
+docs/            reference, migration, research and verification
+scripts/         repeatable protocol and transport probes
+tests/           automated test suite
+pyproject.toml   package and entrypoint metadata
+```
 
-Исследование и доказательства:
-
-- [APP-SERVER-MCP-RESEARCH.md](APP-SERVER-MCP-RESEARCH.md)
-- [APP-SERVER-MCP-VERIFICATION.md](APP-SERVER-MCP-VERIFICATION.md)
-
-## Установка и запуск
+## Install
 
 ```powershell
-cd "D:\ZAI\MCP\Codex CLI"
+Set-Location "<path-to-repository>"
 py -3 -m pip install -e ".[test]"
+```
 
+Project paths fail closed until roots are configured:
+
+```powershell
 $env:CODEX_APP_MCP_ALLOWED_ROOTS = "D:\Projects;D:\Work"
+```
+
+Full host access is explicit:
+
+```powershell
 $env:CODEX_APP_MCP_ALLOW_FULL_ACCESS = "1"
 $env:CODEX_APP_MCP_DEFAULT_SANDBOX = "danger-full-access"
 $env:CODEX_APP_MCP_DEFAULT_APPROVAL_POLICY = "never"
-
-# MCP stdio
-py -3 -m codex_app_mcp
-
-# HTTP service
-$env:CODEX_APP_MCP_HTTP_TOKEN = "<long-random-secret>"
-py -3 -m codex_app_mcp --transport http --host 127.0.0.1 --port 8765
 ```
 
-`danger-full-access` задаётся либо как default выше, либо полем
-`"sandbox": "danger-full-access"` в `thread`, `turn`, `lane` и `command`.
-Gateway никогда не включает его скрыто: требуется
-`CODEX_APP_MCP_ALLOW_FULL_ACCESS=1`.
-
-Для stateful/raw RPC и мутирующих filesystem операций отдельно требуется:
+State-changing administrative and raw RPC calls use a separate gate:
 
 ```powershell
 $env:CODEX_APP_MCP_ALLOW_UNSAFE_RPC = "1"
 $env:CODEX_APP_MCP_ALLOWED_RPC_METHODS = "*"
 ```
 
-`*` удобно для доверенного локального control plane. Для внешнего SaaS лучше
-перечислить методы явно.
+Use a narrow method allowlist instead of `*` outside a trusted local control
+plane.
 
-## Проверка
-
-```powershell
-py -3 -m pytest tests -q
-py -3 -m compileall -q codex_app_mcp scripts
-py -3 scripts\check_app_server_protocol.py
-py -3 scripts\audit_app_server_coverage.py
-py -3 scripts\codex_app_mcp_stdio_probe.py
-py -3 scripts\codex_app_mcp_http_probe.py
-```
-
-Полный live probe с реальными записью, turn, shell, review и lane:
+## Run
 
 ```powershell
-$env:CODEX_APP_MCP_ALLOW_FULL_ACCESS = "1"
-$env:CODEX_APP_MCP_ALLOW_UNSAFE_RPC = "1"
-py -3 scripts\codex_app_mcp_full_live_probe.py
+# MCP stdio
+codex-app-mcp
+
+# MCP over HTTP
+$env:CODEX_APP_MCP_HTTP_TOKEN = "<long-random-secret>"
+codex-app-mcp --transport http --host 127.0.0.1 --port 8765
 ```
+
+## Verify
+
+```powershell
+py -3 -m pytest -q
+py -3 -m compileall -q codex_app_mcp scripts tests
+py -3 scripts\check_protocol.py
+py -3 scripts\audit_protocol.py
+py -3 scripts\probe_stdio.py
+py -3 scripts\probe_http.py
+```
+
+The full probe mutates only its own temporary repositories:
+
+```powershell
+py -3 scripts\probe_full.py
+```
+
+The optional persisted-goal probe may consume model usage:
+
+```powershell
+py -3 scripts\probe_goal.py --goal
+```
+
+## Documentation
+
+- [Reference](docs/REFERENCE.md)
+- [Migration](docs/MIGRATION.md)
+- [Research](docs/RESEARCH.md)
+- [Verification](docs/VERIFICATION.md)
+
+The protocol catalog is generated from the configured binary, so an older
+Codex build cannot be mistaken for one that supports a future method.

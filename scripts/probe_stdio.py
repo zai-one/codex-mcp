@@ -1,4 +1,4 @@
-"""End-to-end probe of MCP stdio -> gateway -> live Codex app-server."""
+"""Probe MCP stdio -> gateway -> live Codex app-server."""
 
 from __future__ import annotations
 

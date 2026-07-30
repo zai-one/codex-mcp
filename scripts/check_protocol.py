@@ -1,4 +1,4 @@
-"""Generate the installed app-server schema and fail on required protocol drift."""
+"""Fail on required protocol drift in the installed app-server schema."""
 
 from __future__ import annotations
 

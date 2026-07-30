@@ -424,8 +424,8 @@ def tool_schemas() -> list[dict[str, Any]]:
         {
             "name": "codex_app_lane",
             "description": (
-                "App-server replacement for codex_delegate: prepare/list/diff isolated "
-                "codex/* git worktrees, run or background a turn, poll it, and review it."
+                "Prepare/list/diff isolated codex/* git worktrees, run or background "
+                "a turn, poll it, and review it through app-server."
             ),
             "inputSchema": _schema(
                 {
