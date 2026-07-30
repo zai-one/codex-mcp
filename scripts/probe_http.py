@@ -1,4 +1,4 @@
-"""External-process probe of MCP HTTP -> gateway -> live Codex app-server."""
+"""Probe MCP HTTP -> gateway -> live Codex app-server."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Audit MCP gateway coverage against a concrete Codex app-server schema."""
+"""Audit gateway coverage against a concrete Codex app-server schema."""
 
 from __future__ import annotations
 

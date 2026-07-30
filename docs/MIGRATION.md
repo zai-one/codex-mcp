@@ -1,4 +1,4 @@
-# Перенос `codex_delegate` на Codex app-server
+# Миграция на Codex app-server
 
 Срез: 29 июля 2026 года. Gateway `0.4.0`, проверенный runtime
 `codex-cli 0.146.0`.
@@ -37,7 +37,7 @@ index, то есть работает не только между потока�
 - downstream MCP/SaaS call;
 - apps/plugins/skills/hooks discovery;
 - raw RPC для новых методов без ожидания релиза gateway;
-- bearer HTTP control plane.
+- bearer HTTP control plane;
 - exact-schema protocol introspection;
 - typed administrative APIs and durable timezone-aware schedules.
 
@@ -100,5 +100,6 @@ policy, а выполнение требует явного operator allowlist.
 - subprocess logic `codex exec` / `codex exec review`;
 - старые CLI-contract и CLI-specific tests.
 
-Исторические `GOAL-*`, `EVIDENCE-*` и `CODEX-CLI-FACTS.md` оставлены как
-аудит разработки. Они не являются активным runtime или документацией запуска.
+Исторические round/evidence/CLI-facts документы удалены после завершения
+миграции. Актуальными источниками остаются `README.md`, `docs/REFERENCE.md`
+и `docs/VERIFICATION.md`.
