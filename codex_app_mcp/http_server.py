@@ -5,8 +5,10 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import threading
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, Optional
 
 from .gateway import CodexAppGateway
@@ -19,6 +21,44 @@ from .server import (
 )
 
 LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _configured_token(explicit: Optional[str]) -> Optional[str]:
+    if explicit is not None:
+        value = str(explicit).strip()
+        return value or None
+    value = os.environ.get("CODEX_APP_MCP_HTTP_TOKEN", "").strip()
+    token_file = os.environ.get("CODEX_APP_MCP_HTTP_TOKEN_FILE", "").strip()
+    if value and token_file:
+        raise ValueError(
+            "set only one of CODEX_APP_MCP_HTTP_TOKEN and "
+            "CODEX_APP_MCP_HTTP_TOKEN_FILE"
+        )
+    if not token_file:
+        return value or None
+    path = Path(token_file).expanduser().resolve()
+    try:
+        value = path.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise ValueError("cannot read CODEX_APP_MCP_HTTP_TOKEN_FILE") from exc
+    if not value:
+        raise ValueError("CODEX_APP_MCP_HTTP_TOKEN_FILE is empty")
+    return value
+
+
+def _configured_max_inflight(explicit: Optional[int]) -> int:
+    raw: Any = (
+        explicit
+        if explicit is not None
+        else os.environ.get("CODEX_APP_MCP_HTTP_MAX_INFLIGHT", "16")
+    )
+    try:
+        value = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("HTTP max inflight must be an integer") from exc
+    if value < 1 or value > 256:
+        raise ValueError("HTTP max inflight must be between 1 and 256")
+    return value
 
 
 def _origins() -> frozenset[str]:
@@ -40,11 +80,13 @@ class GatewayHTTPServer(ThreadingHTTPServer):
         *,
         token: Optional[str],
         allowed_origins: frozenset[str],
+        max_inflight: int,
     ) -> None:
         self.gateway = gateway
         self.gateway.start_background()
         self.token = token
         self.allowed_origins = allowed_origins
+        self.inflight = threading.BoundedSemaphore(max_inflight)
         super().__init__(server_address, GatewayHTTPRequestHandler)
 
     def server_close(self) -> None:
@@ -98,6 +140,19 @@ class GatewayHTTPRequestHandler(BaseHTTPRequestHandler):
             return
         if not self._authorized() or not self._origin_allowed():
             return
+        if not self.server.inflight.acquire(blocking=False):
+            self._json(
+                HTTPStatus.SERVICE_UNAVAILABLE,
+                {"ok": False, "error": "SERVER_BUSY"},
+                extra_headers={"Retry-After": "1"},
+            )
+            return
+        try:
+            self._handle_mcp_post()
+        finally:
+            self.server.inflight.release()
+
+    def _handle_mcp_post(self) -> None:
         content_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip()
         if content_type != "application/json":
             self._json(
@@ -263,22 +318,22 @@ def create_http_server(
     port: int,
     gateway: Optional[CodexAppGateway] = None,
     token: Optional[str] = None,
+    max_inflight: Optional[int] = None,
 ) -> GatewayHTTPServer:
     host = str(host).strip()
     if not host:
         raise ValueError("HTTP host must not be empty")
     if port < 0 or port > 65_535:
         raise ValueError("HTTP port must be between 0 and 65535")
-    configured = (
-        token if token is not None else os.environ.get("CODEX_APP_MCP_HTTP_TOKEN")
-    )
+    configured = _configured_token(token)
     if host.lower() not in LOOPBACK_HOSTS and not configured:
-        raise ValueError("non-loopback HTTP bind requires CODEX_APP_MCP_HTTP_TOKEN")
+        raise ValueError("non-loopback HTTP bind requires an HTTP bearer token")
     return GatewayHTTPServer(
         (host, port),
         gateway or CodexAppGateway(),
-        token=configured or None,
+        token=configured,
         allowed_origins=_origins(),
+        max_inflight=_configured_max_inflight(max_inflight),
     )
 
 

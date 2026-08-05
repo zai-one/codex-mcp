@@ -1226,6 +1226,48 @@ def test_http_non_loopback_requires_token(
         create_http_server(host="0.0.0.0", port=0, gateway=app, token="")
 
 
+def test_http_token_file_and_inflight_configuration(
+    gateway: tuple[CodexAppGateway, FakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app, _ = gateway
+    token_path = tmp_path / "http-token"
+    token_path.write_text("file-secret\n", encoding="utf-8")
+    monkeypatch.setenv("CODEX_APP_MCP_HTTP_TOKEN_FILE", str(token_path))
+    monkeypatch.setenv("CODEX_APP_MCP_HTTP_MAX_INFLIGHT", "7")
+    server = create_http_server(host="127.0.0.1", port=0, gateway=app)
+    try:
+        assert server.token == "file-secret"
+        assert server.inflight._initial_value == 7
+    finally:
+        server.server_close()
+
+
+def test_http_token_sources_and_inflight_limit_are_validated(
+    gateway: tuple[CodexAppGateway, FakeClient],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app, _ = gateway
+    token_path = tmp_path / "http-token"
+    token_path.write_text("file-secret", encoding="utf-8")
+    monkeypatch.setenv("CODEX_APP_MCP_HTTP_TOKEN", "environment-secret")
+    monkeypatch.setenv("CODEX_APP_MCP_HTTP_TOKEN_FILE", str(token_path))
+    with pytest.raises(ValueError, match="only one"):
+        create_http_server(host="127.0.0.1", port=0, gateway=app)
+
+    monkeypatch.delenv("CODEX_APP_MCP_HTTP_TOKEN")
+    monkeypatch.delenv("CODEX_APP_MCP_HTTP_TOKEN_FILE")
+    with pytest.raises(ValueError, match="between 1 and 256"):
+        create_http_server(
+            host="127.0.0.1",
+            port=0,
+            gateway=app,
+            max_inflight=0,
+        )
+
+
 def test_http_current_protocol_headers_are_validated(
     gateway: tuple[CodexAppGateway, FakeClient],
 ) -> None:

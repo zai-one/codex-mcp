@@ -102,6 +102,8 @@ py -3 -m codex_app_mcp --transport http --host 127.0.0.1 --port 8765
 - `GET /readyz` requires bearer auth and starts/probes app-server.
 - `POST /mcp` accepts JSON-RPC MCP requests.
 - non-loopback bind is refused without a token;
+- bearer can be read from `CODEX_APP_MCP_HTTP_TOKEN_FILE`;
+- concurrent MCP requests are bounded and return `503 SERVER_BUSY` when full;
 - put non-loopback deployments behind TLS;
 - exact browser Origins require `CODEX_APP_MCP_HTTP_ALLOWED_ORIGINS`.
 
@@ -109,6 +111,11 @@ Legacy MCP versions `2024-11-05` through `2025-11-25` negotiate through
 initialize. The current stateless contract supports `2026-07-28` request
 headers and `_meta`. Events are retrieved with `codex_app_events`; this
 transport intentionally has no unsolicited SSE stream.
+
+For remote Linux placement, keep app-server local to the gateway over stdio.
+Expose only the MCP HTTP endpoint through an SSH/VPN tunnel or a TLS reverse
+proxy. All `cwd` and `repoRoot` values refer to paths on that Linux host; this
+gateway does not synchronize a caller's local working tree.
 
 ## MCP tools
 
@@ -295,6 +302,8 @@ arguments, env, tokens, and credentials are never included. Set
 | `CODEX_APP_MCP_AUDIT` | `1` | secret-safe audit |
 | `CODEX_APP_MCP_AUDIT_PATH` | stderr | optional JSONL file |
 | `CODEX_APP_MCP_HTTP_TOKEN` | empty | bearer token |
+| `CODEX_APP_MCP_HTTP_TOKEN_FILE` | empty | file containing bearer token; mutually exclusive with token |
+| `CODEX_APP_MCP_HTTP_MAX_INFLIGHT` | `16` | concurrent HTTP MCP request limit, range 1–256 |
 
 Security-sensitive thread config keys cannot be enabled through the generic
 config allowlist. Sandbox, approval, model effort, plugins, MCP, hooks,

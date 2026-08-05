@@ -71,6 +71,10 @@ $env:CODEX_APP_MCP_HTTP_TOKEN = "<long-random-secret>"
 codex-app-mcp --transport http --host 127.0.0.1 --port 8765
 ```
 
+For a service deployment, use `CODEX_APP_MCP_HTTP_TOKEN_FILE` instead of
+putting the bearer token directly in the process environment. The two token
+settings are mutually exclusive.
+
 ## Verify
 
 ```powershell

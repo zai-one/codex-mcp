@@ -16,6 +16,16 @@ from .errors import GatewayError, error_envelope
 from .gateway import ADMIN_OPERATIONS, CodexAppGateway
 
 SERVER_NAME = "codex-app-mcp"
+SERVER_INSTRUCTIONS = (
+    "Use this server to obtain an independent Codex analysis or to run governed "
+    "Codex work. For a focused consultation, start a thread, start a turn, then "
+    "poll codex_app_events. Use codex_app_lane for isolated repository work and "
+    "codex_app_job with kind=goal for durable long-running objectives. Use "
+    "codex_app_protocol only to inspect a specific low-level method. Always pass "
+    "the intended cwd or repoRoot, model, reasoning effort, sandbox, and approval "
+    "policy; the calling agent remains responsible for comparing results and "
+    "presenting the final decision."
+)
 CURRENT_PROTOCOL_VERSION = "2026-07-28"
 LEGACY_PROTOCOL_VERSIONS = ("2025-11-25", "2025-06-18", "2024-11-05")
 SUPPORTED_PROTOCOL_VERSIONS = (CURRENT_PROTOCOL_VERSION, *LEGACY_PROTOCOL_VERSIONS)
@@ -764,10 +774,7 @@ def handle_jsonrpc(
                 "supportedVersions": list(SUPPORTED_PROTOCOL_VERSIONS),
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": SERVER_NAME, "version": __version__},
-                "instructions": (
-                    "Use codex_app_job for durable long-running work; use "
-                    "codex_app_events to poll Codex notifications and approvals."
-                ),
+                "instructions": SERVER_INSTRUCTIONS,
             },
         }
     if method == "initialize":
@@ -785,6 +792,7 @@ def handle_jsonrpc(
                 "protocolVersion": negotiated,
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": SERVER_NAME, "version": __version__},
+                "instructions": SERVER_INSTRUCTIONS,
             },
         }
     if method == "ping":
