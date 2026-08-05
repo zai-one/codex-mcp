@@ -292,6 +292,9 @@ class AppServerClient:
             match.group(1),
             flags=re.IGNORECASE,
         )
+        # Normalize Windows separators so Path resolution is host-safe when the
+        # Windows branch is exercised under tests on POSIX.
+        script_text = script_text.replace(chr(92), os.sep)
         script = Path(script_text).resolve()
         if not script.is_file():
             return [str(resolved)]
