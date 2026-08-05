@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "codex-app": {
+      "type": "stdio",
+      "command": "codex-app-mcp",
+      "args": [],
+      "env": {
+        "CODEX_APP_MCP_ALLOWED_ROOTS": "/path/to/allowed/project",
+        "CODEX_APP_MCP_ALLOW_FULL_ACCESS": "0"
+      }
+    }
+  }
+}

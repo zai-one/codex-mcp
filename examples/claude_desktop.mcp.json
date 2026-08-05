@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "codex-app": {
+      "command": "codex-app-mcp",
+      "args": [],
+      "cwd": "<path-to-repository>",
+      "env": {
+        "CODEX_APP_MCP_ALLOWED_ROOTS": "/path/to/allowed/project",
+        "CODEX_APP_MCP_ALLOW_FULL_ACCESS": "0",
+        "CODEX_APP_MCP_DEFAULT_SANDBOX": "workspace-write",
+        "CODEX_APP_MCP_DEFAULT_APPROVAL_POLICY": "on-request"
+      }
+    }
+  }
+}

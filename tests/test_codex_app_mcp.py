@@ -751,6 +751,9 @@ def test_raw_client_surfaces_rpc_error(tmp_path: Path) -> None:
 def test_windows_npm_shim_resolves_to_node_script(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Windows npm shim resolution must pick the native codex.exe payload."""
+    import pathlib as _pl
+
     shim = tmp_path / "codex.CMD"
     script = tmp_path / "node_modules" / "@openai" / "codex" / "bin" / "codex.js"
     script.parent.mkdir(parents=True)
@@ -771,7 +774,6 @@ def test_windows_npm_shim_resolves_to_node_script(
         '"%_prog%" "%dp0%\\node_modules\\@openai\\codex\\bin\\codex.js" %*',
         encoding="utf-8",
     )
-    monkeypatch.setattr(os, "name", "nt")
     monkeypatch.setattr(
         shutil,
         "which",
@@ -780,8 +782,24 @@ def test_windows_npm_shim_resolves_to_node_script(
         ),
     )
     (tmp_path / "node.exe").write_bytes(b"fake")
-    assert AppServerClient._resolve_launch_command(shim) == [str(native.resolve())]
 
+    original_name = os.name
+    original_new = _pl.Path.__new__
+
+    def _safe_new(cls, *args, **kwargs):
+        if cls is _pl.Path:
+            cls = _pl.PosixPath
+        return original_new(cls, *args, **kwargs)
+
+    try:
+        os.name = "nt"
+        _pl.Path.__new__ = staticmethod(_safe_new)  # type: ignore[method-assign]
+        resolved = AppServerClient._resolve_launch_command(shim)
+    finally:
+        os.name = original_name
+        _pl.Path.__new__ = original_new  # type: ignore[method-assign]
+
+    assert resolved == [str(native.resolve())]
 
 def test_goal_start_only_resumes_unloaded_existing_thread(
     gateway: tuple[CodexAppGateway, FakeClient],

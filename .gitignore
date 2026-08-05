@@ -14,3 +14,6 @@ venv/
 *.sqlite3-shm
 *.sqlite3-wal
 .codex-app-mcp/
+
+.env
+*.token
