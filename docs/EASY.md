@@ -1,63 +1,49 @@
-# Easy install (plain English)
+# Install (the only path)
 
-> Unofficial community project — **not** OpenAI / Codex official.
+> **Unofficial** community project — **not** OpenAI / Codex.
 
-## Can a non-developer do this?
+## One command
 
-**Mostly yes**, if you can paste one command and finish `codex login` in a browser.
-
-| Step | Who does it | Hard? |
-|---|---|---|
-| Install Python + this MCP + config files | **1 command** below | Easy |
-| Install **Codex CLI** | You (product installer) | Medium — once |
-| `codex login` | You (browser/device) | Easy but **required** |
-| Paste JSON into Claude / Cursor | You (or agent skill) | Easy |
-| Day-to-day use | Host agent calls tools | Easy |
-
-There is **no** fully automatic login: Codex account auth is interactive on purpose.
-
-## One command (macOS / Linux)
+**macOS / Linux:**
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zai-one/codex-mcp/main/scripts/install.sh \
   | bash -s -- --project "$HOME/code/my-project"
 ```
 
-Replace the project path with a real folder.
-
-What the script does:
-
-1. Finds or installs Python 3.10+ (via [uv](https://github.com/astral-sh/uv) if needed)
-2. Clones this repo to `~/.local/share/codex-mcp`
-3. Creates a venv and installs the package
-4. Writes env + a `codex-mcp` launcher in `~/.local/bin`
-5. Writes Claude/Cursor MCP JSON snippets
-6. Runs `scripts/probe_stdio.py` and tells you if `codex login` is still needed
-
-## One command (Windows PowerShell)
+**Windows (PowerShell):**
 
 ```powershell
 irm https://raw.githubusercontent.com/zai-one/codex-mcp/main/scripts/install.ps1 | iex
 ```
 
-## After the script
+## Then do these 3 things
 
 ```bash
+# 1) Codex product login (required — interactive)
 codex login
+
+# 2) Check
 source ~/.config/codex-mcp/env
 ~/.local/share/codex-mcp/.venv/bin/python ~/.local/share/codex-mcp/scripts/probe_stdio.py
+
+# 3) Wire Claude Desktop / Cursor
+# merge: ~/.config/codex-mcp/mcp/claude_desktop.snippet.json
+# restart → call codex_app_status
 ```
 
-Wire Claude Desktop: merge `~/.config/codex-mcp/mcp/claude_desktop.snippet.json`, restart Claude.
+## If something fails
 
-In chat: **codex_app_status** → **codex_app_economy** → small goal with low `tokenBudget`.
-
-## Honesty meter
-
-| Claim | Reality |
+| Message | Fix |
 |---|---|
-| “Truly one command forever” | **Almost** — CLI login is still a second human step |
-| “Works without Codex CLI” | **No** — this is only a gateway |
-| “Official OpenAI” | **No** — community |
+| codex not found | Install Codex CLI, then `codex login` |
+| app-server unavailable | Same OS user as login; check `CODEX_HOME` |
+| Tools missing | Restart host; check launcher path |
 
-More: [START_HERE.md](START_HERE.md) · [install/en.md](install/en.md)
+## Optional later
+
+- VPS / HTTP: `docs/install/vps.md`
+- FastMCP: `docs/install/fastmcp.md`
+- Economy: `docs/economy.md`
+
+No multi-step manual pip install in public docs — use the script.
