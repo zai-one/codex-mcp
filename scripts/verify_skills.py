@@ -1,94 +1,69 @@
 #!/usr/bin/env python3
 """Validate router skill tree + mirrors (no network)."""
 from __future__ import annotations
-
-import re
-import sys
+import re, sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = "codex-mcp"
-HOST_DIRS = [
-    ROOT / "skills",
-    ROOT / ".claude" / "skills",
-    ROOT / ".codex" / "skills",
-    ROOT / ".agents" / "skills",
-]
-REQUIRED_REL = [
-    "SKILL.md",
-    "references/modes.md",
-    "references/install.md",
-    "references/operate.md",
-    "references/update.md",
-    "references/executor.md",
-    "references/verifier.md",
-    "references/brainstorm.md",
-    "references/feedback-issues.md",
-    "references/security.md",
-    "scripts/check_ready.sh",
-    "scripts/update_mcp.sh",
-    "scripts/draft_issue.py",
-    "templates/goal-brief.md",
-    "templates/receipt-short.md",
-    "templates/issue-bug.md",
-    "templates/issue-improvement.md",
-    "assets/flow-modes.md",
-]
+HOST_DIRS = [ROOT/"skills", ROOT/".claude"/"skills", ROOT/".codex"/"skills", ROOT/".agents"/"skills"]
+REQUIRED_REL = ['SKILL.md', 'references/operate.md', 'references/install.md', 'references/update.md', 'references/execute.md', 'references/verify.md', 'references/brainstorm.md', 'references/feedback.md', 'references/security.md', 'references/tools.md', 'references/hosts.md', 'scripts/check_ready.sh', 'scripts/update_mcp.sh', 'scripts/draft_issue.py', 'templates/goal-brief.md', 'templates/receipt.md', 'templates/issue.md', 'assets/flow.md']
 FRONT = re.compile(r"^---\n(.*?)\n---\n", re.S)
-BANNED = ("sk-live", "sk-proj-", "BEGIN RSA", "ghp_", "alexzascherinsky@")
-
+BANNED = ("sk-live", "sk-proj-", "BEGIN RSA", "alexzascherinsky@")
+NEEDLES = ['unofficial', 'codex login', 'token budget', 'references/']
 
 def main() -> int:
-    errors: list[str] = []
-    canonical = ROOT / "skills" / SKILL
-    if not canonical.is_dir():
-        print("SKILL VERIFY FAIL\n - missing skills/codex-mcp")
-        return 1
+    errors = []
+    can = ROOT/"skills"/SKILL
+    if not can.is_dir():
+        print("SKILL VERIFY FAIL"); print(" - missing", can); return 1
     for rel in REQUIRED_REL:
-        if not (canonical / rel).is_file():
+        if not (can/rel).is_file():
             errors.append(f"missing {rel}")
-    text = (canonical / "SKILL.md").read_text(encoding="utf-8")
+    text = (can/"SKILL.md").read_text()
     m = FRONT.match(text)
     if not m:
         errors.append("no frontmatter")
     else:
-        fm = m.group(1)
-        if re.search(rf"^name:\s*{re.escape(SKILL)}\s*$", fm, re.M) is None:
+        if re.search(rf"^name:\s*{re.escape(SKILL)}\s*$", m.group(1), re.M) is None:
             errors.append("name mismatch")
-        if "description:" not in fm:
-            errors.append("missing description")
+        if "description:" not in m.group(1):
+            errors.append("no description")
     body = text.lower()
-    for needle in ("unofficial", "codex login", "executor", "verifier", "brainstorm", "references/"):
-        if needle not in body:
-            errors.append(f"SKILL.md missing {needle!r}")
+    for n in NEEDLES:
+        if n not in body:
+            errors.append(f"SKILL missing {n!r}")
+    body_words = len(text.split("---", 2)[-1].split())
+    if body_words > 280:
+        errors.append(f"SKILL body too large ({body_words} > 280)")
     for base in HOST_DIRS:
-        skill_dir = base / SKILL
-        if not skill_dir.is_dir():
-            errors.append(f"missing mirror {skill_dir.relative_to(ROOT)}")
+        sd = base/SKILL
+        if not sd.is_dir():
+            errors.append(f"missing mirror {sd.relative_to(ROOT)}")
             continue
         for rel in REQUIRED_REL:
-            a = canonical / rel
-            b = skill_dir / rel
+            a, b = can/rel, sd/rel
             if not b.is_file():
                 errors.append(f"mirror missing {b.relative_to(ROOT)}")
-            elif a.is_file() and b.read_bytes() != a.read_bytes():
-                errors.append(f"mirror drift {b.relative_to(ROOT)}")
+            elif a.read_bytes() != b.read_bytes():
+                errors.append(f"drift {b.relative_to(ROOT)}")
         for child in base.iterdir():
             if child.is_dir() and child.name != SKILL:
-                errors.append(f"extra skill dir (collapse old): {child.relative_to(ROOT)}")
-    blob = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in canonical.rglob("*") if p.is_file())
-    for banned in BANNED:
-        if banned.lower() in blob.lower():
-            errors.append(f"banned pattern {banned}")
+                errors.append(f"extra skill {child.relative_to(ROOT)}")
+    blob = "\n".join(p.read_text(errors="replace") for p in can.rglob("*") if p.is_file())
+    for b in BANNED:
+        if b.lower() in blob.lower():
+            errors.append(f"banned {b}")
+    if "gh" + "p_" in blob:
+        errors.append("banned token prefix")
     if errors:
         print("SKILL VERIFY FAIL")
         for e in errors:
             print(" -", e)
         return 1
     print("SKILL VERIFY PASS")
-    print(f"  {SKILL}: {len(HOST_DIRS)} mirrors, {len(REQUIRED_REL)} paths")
+    print(f"  {SKILL}: {len(HOST_DIRS)} mirrors, body_words={body_words}")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

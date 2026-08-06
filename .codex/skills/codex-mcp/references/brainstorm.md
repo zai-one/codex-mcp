@@ -1,6 +1,5 @@
-# Brainstorm mode
+# Brainstorm
 
-- Host + user decide product/options
-- Optional light MCP status/docs tools only
-- **No** large `codex_app_goal` until user says to build
-- Output: options, recommendation, "ready to execute?"
+Host reasons; light tools only. **No large goals.**
+
+Output: 2–4 options · pick · risks · ask before execute.
