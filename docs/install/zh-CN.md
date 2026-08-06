@@ -1,4 +1,6 @@
 # 安装与连接（简体中文）
+> **一键安装：** `curl -fsSL https://raw.githubusercontent.com/zai-one/codex-mcp/main/scripts/install.sh | bash -s -- --project "$HOME/code/my-project"`，然后 `codex login`。见 [EASY.md](../EASY.md)。
+
 > ### ⛔ 先安装 CLI
 >
 > 必须先安装 **Codex CLI** 并完成 `codex login`（同一机器/用户）。见 [START_HERE.md](../START_HERE.md)。技能：`install-codex-mcp`。

@@ -1,4 +1,6 @@
 # Instalación y conexión (español)
+> **Instalación rápida:** `curl -fsSL https://raw.githubusercontent.com/zai-one/codex-mcp/main/scripts/install.sh | bash -s -- --project "$HOME/code/my-project"` — luego `codex login`. Ver [EASY.md](../EASY.md).
+
 > ### ⛔ Primero el CLI
 >
 > Este MCP **no funciona** sin **Codex CLI** y `codex login` en la misma máquina/usuario. Ver [START_HERE.md](../START_HERE.md). Skill: `install-codex-mcp`.

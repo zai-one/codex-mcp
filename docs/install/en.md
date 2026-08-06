@@ -1,5 +1,14 @@
 # Install and connect (English)
 
+## One-command install
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zai-one/codex-mcp/main/scripts/install.sh \
+  | bash -s -- --project "/absolute/path/to/your/project"
+```
+
+See [EASY.md](../EASY.md). You still need **Codex CLI** + `codex login`.
+
 > ### ⛔ Before anything else
 >
 > This MCP **only works** after **Codex CLI (`codex login`)** is installed and authenticated on the
