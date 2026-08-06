@@ -17,7 +17,11 @@ def test_verify_skills_script_passes() -> None:
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
-def test_start_here_cli_gate() -> None:
-    text = (ROOT / "docs" / "START_HERE.md").read_text(encoding="utf-8")
-    assert "codex login" in text
-    assert "does nothing useful until" in text.lower() or "ALL of these are true" in text
+def test_easy_install_is_the_path() -> None:
+    easy = (ROOT / "docs" / "EASY.md").read_text(encoding="utf-8")
+    assert "install.sh" in easy
+    assert "codex login" in easy
+    start = (ROOT / "docs" / "START_HERE.md").read_text(encoding="utf-8")
+    assert "EASY.md" in start
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "install.sh" in readme
