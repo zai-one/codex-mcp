@@ -1,7 +1,7 @@
 # 安装与连接（简体中文）
 
 完整指南：安装 **codex-app-mcp**、通过 stdio 或 HTTP 运行，并连接常见
-MCP 宿主。版本 **0.4.0**。
+MCP 宿主。版本 **0.5.0**。
 
 其他语言：[English](en.md) · [Русский](ru.md) · [Español](es.md)
 
@@ -364,3 +364,61 @@ unsupported。本包有意仅提供：
 - [迁移说明](../MIGRATION.md)
 - [贡献指南](../../CONTRIBUTING.md)
 - [安全策略](../../SECURITY.md)
+
+
+---
+
+## 免责声明（非官方产品）
+
+> **社区项目。** 这 **不是** **OpenAI**、**Codex**、Anthropic、xAI 或 Grok 的官方产品。
+> 鉴权仅使用本机 **`codex login`**（`CODEX_HOME`）。**切勿** 将 OpenAI/Codex OAuth
+> 或 API key 写入 MCP 配置或 HTTP bearer。
+
+---
+
+## Token 经济
+
+宿主代理用短工具调用编排；**Codex app-server** 在本机或 VPS 上按 token 预算跑长循环。
+
+| 环境变量 | 作用 |
+|---|---|
+| `CODEX_APP_MCP_ECONOMY=1` | 启用 economy playbook |
+
+工具：**`codex_app_economy`**。推荐 `codex_app_goal` + `tokenBudget`（16k–40k）。  
+详见：[../economy.md](../economy.md)（英文）。
+
+---
+
+## FastMCP
+
+| 路径 | 方式 |
+|---|---|
+| 本地 stdio | `codex-app-mcp` / `python -m codex_app_mcp` |
+| 远程代理 | 原生 HTTP + TLS；FastMCP `create_proxy` + bearer |
+
+[fastmcp.md](fastmcp.md) · [../../examples/fastmcp_proxy.py](../../examples/fastmcp_proxy.py)
+
+---
+
+## VPS（HTTP 已原生支持）
+
+```bash
+export CODEX_APP_MCP_ALLOWED_ROOTS="<PROJECT_ROOT>"
+export CODEX_APP_MCP_HTTP_TOKEN_FILE="<TOKEN_FILE>"
+codex-app-mcp --transport http --host 127.0.0.1 --port 8765
+```
+
+Bearer 为运维随机密钥，**不是** OpenAI OAuth。  
+[vps.md](vps.md) · [../../examples/vps.systemd.service](../../examples/vps.systemd.service) ·
+[../../examples/http.env.example](../../examples/http.env.example)
+
+---
+
+## Economy 相关环境变量
+
+| 变量 | 说明 |
+|---|---|
+| `CODEX_APP_MCP_ECONOMY` | 启用 economy playbook |
+| `CODEX_APP_MCP_HTTP_TOKEN` | HTTP bearer（env） |
+| `CODEX_APP_MCP_HTTP_TOKEN_FILE` | bearer 文件路径（`<TOKEN_FILE>`） |
+| `CODEX_APP_MCP_HTTP_HOST` / `PORT` | 默认 `127.0.0.1:8765` |

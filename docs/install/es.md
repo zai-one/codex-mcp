@@ -1,7 +1,7 @@
 # Instalación y conexión (español)
 
 Guía completa para instalar **codex-app-mcp**, ejecutarlo por stdio o HTTP y
-conectar hosts MCP habituales. Versión **0.4.0**.
+conectar hosts MCP habituales. Versión **0.5.0**.
 
 Otros idiomas: [English](en.md) · [Русский](ru.md) · [简体中文](zh-CN.md)
 
@@ -377,3 +377,63 @@ Política completa: [SECURITY.md](../../SECURITY.md).
 - [Migración](../MIGRATION.md)
 - [Contribuir](../../CONTRIBUTING.md)
 - [Seguridad](../../SECURITY.md)
+
+
+---
+
+## Aviso legal (producto no oficial)
+
+> **Proyecto comunitario.** **No** es un producto oficial de **OpenAI**, **Codex**,
+> Anthropic, xAI ni Grok. La autenticación es el **`codex login` local**
+> (`CODEX_HOME`). **Nunca** ponga OAuth de OpenAI/Codex ni API keys en la
+> configuración MCP ni en el bearer HTTP.
+
+---
+
+## Economía de tokens
+
+El host orquesta con llamadas cortas; **Codex app-server** ejecuta el bucle
+largo bajo un token budget (local o VPS).
+
+| Variable | Propósito |
+|---|---|
+| `CODEX_APP_MCP_ECONOMY=1` | Modo economy / playbook |
+
+Herramienta: **`codex_app_economy`**. Prefiera `codex_app_goal` + `tokenBudget`
+(16k–40k). Guía: [../economy.md](../economy.md) (EN).
+
+---
+
+## FastMCP
+
+| Ruta | Cómo |
+|---|---|
+| stdio local | `codex-app-mcp` / `python -m codex_app_mcp` |
+| Proxy remoto | HTTP nativo + TLS; FastMCP `create_proxy` + bearer |
+
+[fastmcp.md](fastmcp.md) · [../../examples/fastmcp_proxy.py](../../examples/fastmcp_proxy.py)
+
+---
+
+## VPS (HTTP ya nativo)
+
+```bash
+export CODEX_APP_MCP_ALLOWED_ROOTS="<PROJECT_ROOT>"
+export CODEX_APP_MCP_HTTP_TOKEN_FILE="<TOKEN_FILE>"
+codex-app-mcp --transport http --host 127.0.0.1 --port 8765
+```
+
+Bearer = secreto del operador, **no** OAuth de OpenAI.  
+[vps.md](vps.md) · [../../examples/vps.systemd.service](../../examples/vps.systemd.service) ·
+[../../examples/http.env.example](../../examples/http.env.example)
+
+---
+
+## Variables de economy / HTTP
+
+| Variable | Descripción |
+|---|---|
+| `CODEX_APP_MCP_ECONOMY` | Activa el playbook de economy |
+| `CODEX_APP_MCP_HTTP_TOKEN` | Bearer en env |
+| `CODEX_APP_MCP_HTTP_TOKEN_FILE` | Ruta al bearer (`<TOKEN_FILE>`) |
+| `CODEX_APP_MCP_HTTP_HOST` / `PORT` | Por defecto `127.0.0.1:8765` |

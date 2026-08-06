@@ -1,0 +1,36 @@
+# systemd unit template for codex-app-mcp HTTP MCP on a VPS
+# Copy to /etc/systemd/system/codex-app-mcp.service and replace placeholders.
+# Unofficial community project — not an official OpenAI/Codex product.
+#
+# Security:
+#   - Auth to models = local codex login for User= below (CODEX_HOME)
+#   - HTTP bearer via TOKEN_FILE only (NOT OpenAI OAuth)
+#   - Bind loopback; TLS reverse proxy in front
+
+[Unit]
+Description=codex-app-mcp (HTTP bearer)
+After=network.target
+
+[Service]
+Type=simple
+User=<SERVICE_USER>
+Group=<SERVICE_GROUP>
+WorkingDirectory=<REPO_PATH>
+
+Environment=CODEX_APP_MCP_ALLOWED_ROOTS=<PROJECT_ROOT>
+Environment=CODEX_APP_MCP_ECONOMY=1
+Environment=CODEX_APP_MCP_TRANSPORT=http
+Environment=CODEX_APP_MCP_HTTP_HOST=127.0.0.1
+Environment=CODEX_APP_MCP_HTTP_PORT=8765
+Environment=CODEX_APP_MCP_HTTP_TOKEN_FILE=<TOKEN_FILE>
+# EnvironmentFile=-/etc/codex-app-mcp/http.env
+
+ExecStart=<VENV_OR_BIN>/codex-app-mcp --transport http --host 127.0.0.1 --port 8765
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

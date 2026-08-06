@@ -1,7 +1,7 @@
 # Установка и подключение (русский)
 
 Полное руководство по установке **codex-app-mcp**, запуску через stdio или
-HTTP и подключению популярных MCP-хостов. Версия **0.4.0**.
+HTTP и подключению популярных MCP-хостов. Версия **0.5.0**.
 
 Другие языки: [English](en.md) · [简体中文](zh-CN.md) · [Español](es.md)
 
@@ -369,3 +369,63 @@ unsupported. Пакет намеренно даёт:
 - [Миграция](../MIGRATION.md)
 - [Contributing](../../CONTRIBUTING.md)
 - [Security](../../SECURITY.md)
+
+
+---
+
+## Отказ от ответственности (неофициальный продукт)
+
+> **Сообщественный проект.** Это **не** официальный продукт **OpenAI**, **Codex**,
+> Anthropic, xAI или Grok. Аутентификация — только **локальный `codex login`**
+> (`CODEX_HOME`). **Никогда** не кладите OpenAI/Codex OAuth или API keys в
+> MCP-конфиг или в HTTP bearer.
+
+---
+
+## Token economy
+
+Хост-агент оркестрирует короткими вызовами; **Codex app-server** ведёт длинный
+цикл под token budget (локально или VPS).
+
+| Переменная | Назначение |
+|---|---|
+| `CODEX_APP_MCP_ECONOMY=1` | Режим economy / playbook |
+
+Инструмент: **`codex_app_economy`**. Цель: `codex_app_goal` + `tokenBudget`
+(16k–40k). Полный гид: [../economy.md](../economy.md) (EN).
+
+---
+
+## FastMCP
+
+| Путь | Как |
+|---|---|
+| Локальный stdio | `codex-app-mcp` / `python -m codex_app_mcp` |
+| Удалённый proxy | Нативный HTTP + TLS; FastMCP `create_proxy` + bearer |
+
+[fastmcp.md](fastmcp.md) · [../../examples/fastmcp_proxy.py](../../examples/fastmcp_proxy.py)
+
+---
+
+## VPS (HTTP уже встроен)
+
+```bash
+export CODEX_APP_MCP_ALLOWED_ROOTS="<PROJECT_ROOT>"
+export CODEX_APP_MCP_HTTP_TOKEN_FILE="<TOKEN_FILE>"
+codex-app-mcp --transport http --host 127.0.0.1 --port 8765
+```
+
+Bearer — операторский секрет, **не** OpenAI OAuth.  
+[vps.md](vps.md) · [../../examples/vps.systemd.service](../../examples/vps.systemd.service) ·
+[../../examples/http.env.example](../../examples/http.env.example)
+
+---
+
+## Переменные economy / HTTP
+
+| Переменная | Описание |
+|---|---|
+| `CODEX_APP_MCP_ECONOMY` | Включает economy playbook |
+| `CODEX_APP_MCP_HTTP_TOKEN` | Bearer в env |
+| `CODEX_APP_MCP_HTTP_TOKEN_FILE` | Путь к bearer (`<TOKEN_FILE>`) |
+| `CODEX_APP_MCP_HTTP_HOST` / `PORT` | По умолчанию `127.0.0.1:8765` |
