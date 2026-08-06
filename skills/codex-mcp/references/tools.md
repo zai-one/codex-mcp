@@ -1,13 +1,11 @@
 # Tools
 
-| Mode | Tools |
-|---|---|
-| always first | `codex_app_session_begin` |
-| progress | `codex_app_session_tick` |
-| finish | `codex_app_session_end` |
-| brainstorm | `codex_app_review`, status |
-| execute | `codex_app_goal` + tokenBudget → job |
-| verify | job/status compact |
-| ops | doctor/discover if broken |
+**Plan compiler = source of truth** (`session_begin.plan`).
 
-verbose only when debugging.
+| Tool | Role |
+|---|---|
+| `codex_app_session_begin` | mode + plan + budget + deny + host_script |
+| `codex_app_session_tick` | step / budget_remaining / force_end |
+| `codex_app_session_end` | receipt + budget_report + lesson |
+
+Other tools: only if listed in plan/recommended for this session.

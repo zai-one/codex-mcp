@@ -58,3 +58,10 @@ Use router skill **`codex-mcp`** ([SKILLS.md](SKILLS.md)).
 2. Call **`codex_app_session_begin`** (`intent: "auto"`).
 3. Follow recommended tools → **`codex_app_session_end`**.
 4. Skill: `codex-mcp` v0.8.
+
+## Session Plan (v1.1)
+
+1. Call **`codex_app_session_begin`** with `goal` and `host_budget: "small"`.
+2. Follow returned **`plan`** tools only (see `host_script`).
+3. **`session_tick`** until done/`force_end`, then **`session_end`**.
+4. Skill `codex-mcp` v0.9 — do not re-plan in prose.

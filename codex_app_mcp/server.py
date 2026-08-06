@@ -108,7 +108,7 @@ def tool_schemas() -> list[dict[str, Any]]:
         },
         {
             "name": "codex_app_session_begin",
-            "description": "Session Protocol v1: begin compact host session (intent enum). Returns mode, gate, tools, skill_ref. Call first.",
+            "description": "Session Protocol v1.1: plan compiler + budget guard. intent, goal, host_budget. Returns plan, budget, deny_tools, host_script.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": False,
@@ -117,13 +117,16 @@ def tool_schemas() -> list[dict[str, Any]]:
                         "type": "string",
                         "enum": ["brainstorm", "execute", "verify", "install", "update", "triage", "feedback", "auto"],
                         "default": "auto",
-                    }
+                    },
+                    "goal": {"type": "string"},
+                    "host_budget": {"type": "string", "enum": ["tiny", "small", "normal"], "default": "small"},
+                    "max_tool_calls": {"type": "integer", "minimum": 1, "maximum": 32},
                 },
             },
         },
         {
             "name": "codex_app_session_tick",
-            "description": "Session Protocol v1: compact progress (state, blockers, host_message). verbose default false.",
+            "description": "Session Protocol v1.1: progress + budget (step, force_end). tool_used/step_done optional.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": False,
@@ -131,6 +134,8 @@ def tool_schemas() -> list[dict[str, Any]]:
                     "session_id": {"type": "string"},
                     "job_id": {"type": "string"},
                     "verbose": {"type": "boolean", "default": False},
+                    "tool_used": {"type": "string"},
+                    "step_done": {"type": "boolean", "default": False},
                 },
             },
         },
@@ -711,12 +716,24 @@ def call_tool(
         if name == "codex_app_economy":
             result = economy_playbook()
         elif name == "codex_app_session_begin":
-            result = session_begin(str(args.get("intent") or "auto"))
+            mtc = args.get("max_tool_calls")
+            try:
+                mtc_i = int(mtc) if mtc is not None and str(mtc) != "" else None
+            except (TypeError, ValueError):
+                mtc_i = None
+            result = session_begin(
+                str(args.get("intent") or "auto"),
+                goal=str(args.get("goal") or "") or None,
+                host_budget=str(args.get("host_budget") or "small"),
+                max_tool_calls=mtc_i,
+            )
         elif name == "codex_app_session_tick":
             result = session_tick(
                 session_id=str(args.get("session_id") or "") or None,
                 job_id=str(args.get("job_id") or "") or None,
                 verbose=bool(args.get("verbose")),
+                tool_used=str(args.get("tool_used") or "") or None,
+                step_done=bool(args.get("step_done")),
             )
         elif name == "codex_app_session_end":
             result = session_end(

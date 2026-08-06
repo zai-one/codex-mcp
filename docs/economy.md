@@ -1,3 +1,7 @@
+## Plan Compiler + Budget Guard
+
+`session_begin` returns a ≤5-step `plan` and hard `budget` (tool_calls/polls). Hosts save tokens by executing the plan only — no re-planning essays.
+
 ## Session Protocol
 
 Prefer `codex_app_session_begin` over re-reading this file.
