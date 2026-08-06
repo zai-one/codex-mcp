@@ -34,7 +34,7 @@ def main() -> int:
         if n not in body:
             errors.append(f"SKILL missing {n!r}")
     body_words = len(text.split("---", 2)[-1].split())
-    if body_words > 280:
+    if body_words > 200:
         errors.append(f"SKILL body too large ({body_words} > 280)")
     for base in HOST_DIRS:
         sd = base/SKILL
