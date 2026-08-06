@@ -23,6 +23,17 @@ codex --version
 codex login
 ```
 
+
+## One-command install (preferred)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zai-one/codex-mcp/main/scripts/install.sh \
+  | bash -s -- --project "<PROJECT_ROOT>"
+```
+
+Still requires Codex CLI + `codex login` after (or before) the script.
+Windows: `scripts/install.ps1`. See `docs/EASY.md`.
+
 ## Package + roots
 
 ```bash

@@ -14,7 +14,18 @@
 
 Installing only this GitHub repo is **not** enough without steps 1–2.
 
-## Two ways to set up
+## Fastest way (one command)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zai-one/codex-mcp/main/scripts/install.sh \
+  | bash -s -- --project "$HOME/code/my-project"
+```
+
+Then: `codex login` → probe → paste MCP snippet into Claude/Cursor.  
+Details: [EASY.md](EASY.md)
+
+## Two ways to set up (manual / agent)
+
 
 ### A) Commands yourself
 

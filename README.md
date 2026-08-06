@@ -3,7 +3,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-see%20repo-lightgrey.svg)](SECURITY.md)
 [![MCP](https://img.shields.io/badge/MCP-stdio%20%7C%20HTTP-purple.svg)](https://modelcontextprotocol.io/)
-[![Version](https://img.shields.io/badge/version-0.5.1-informational.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.5.2-informational.svg)](pyproject.toml)
 
 **One-line pitch:** Governed MCP gateway for **OpenAI Codex app-server** — Claude / Cursor orchestrate with short prompts; Codex on your machine or VPS runs the long coding loop under policy and token budgets.
 
@@ -13,6 +13,31 @@
 
 ---
 
+
+
+## 60-second install (one command)
+
+> Unofficial community gateway. **Not** made by OpenAI/Codex.
+
+**macOS / Linux** — paste this (change the project path):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zai-one/codex-mcp/main/scripts/install.sh \
+  | bash -s -- --project "$HOME/code/my-project"
+```
+
+**Windows (PowerShell):**
+
+```powershell
+irm https://raw.githubusercontent.com/zai-one/codex-mcp/main/scripts/install.ps1 | iex
+```
+
+The script installs Python (via `uv` if needed), this package, env files, and MCP snippets.  
+**You still run** `codex login` once (Codex product auth cannot be fully automated).
+
+Plain English: **[docs/EASY.md](docs/EASY.md)** · checklist: **[docs/START_HERE.md](docs/START_HERE.md)**
+
+---
 
 ## ⛔ Works only if Codex CLI is installed + logged in
 
@@ -50,6 +75,9 @@ Deep dive → [docs/economy.md](docs/economy.md)
 ---
 
 ## Quickstart
+
+Already ran the one-command installer? Skip to `codex login` + probe.
+
 
 ```bash
 # 1) Install
