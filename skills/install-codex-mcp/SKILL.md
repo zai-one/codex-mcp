@@ -1,69 +1,37 @@
 ---
 name: install-codex-mcp
 description: >
-  Install codex-app-mcp only after Codex CLI is installed and `codex login`
-  succeeded. Claude/Cursor/VPS/FastMCP wiring. Abort if CLI/login missing.
-version: 0.5.1
+  Install codex-app-mcp with the one-command script only. Require Codex CLI +
+  codex login. Do not invent multi-step manual pip guides.
+version: 0.5.3
 ---
 
 # install-codex-mcp
 
-> **Unofficial.** Not an official OpenAI/Codex product. Never put OAuth in MCP config or HTTP bearer.
+> Unofficial. Not OpenAI/Codex. No OAuth in MCP config.
 
-## HARD GATE
-
-1. `codex --version` (or your install’s version flag) works  
-2. `codex login` completed as the **same OS user** that runs the MCP  
-3. Then install this package
-
-If 1–2 fail → **stop**. Do not invent API keys.
-
-```bash
-codex --version
-codex login
-```
-
-
-## One-command install (preferred)
+## Only supported install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zai-one/codex-mcp/main/scripts/install.sh \
   | bash -s -- --project "<PROJECT_ROOT>"
+codex login
+source ~/.config/codex-mcp/env
+~/.local/share/codex-mcp/.venv/bin/python ~/.local/share/codex-mcp/scripts/probe_stdio.py
 ```
 
-Still requires Codex CLI + `codex login` after (or before) the script.
-Windows: `scripts/install.ps1`. See `docs/EASY.md`.
+Windows: `scripts/install.ps1`. Docs: `docs/EASY.md`.
 
-## Package + roots
+## HARD GATE
 
-```bash
-cd <REPO_PATH>
-python -m pip install -e ".[test]"
-export CODEX_APP_MCP_ALLOWED_ROOTS="<PROJECT_ROOT>"
-export CODEX_APP_MCP_ECONOMY=1
-python scripts/probe_stdio.py
-```
+Without **Codex CLI** + **`codex login`** stop and tell the user.
 
-## Hosts
+## Wire host
 
-| Host | Template |
-|---|---|
-| Claude Desktop | `examples/claude_desktop.mcp.json` |
-| Claude Code | `examples/claude-code.mcp.json` |
-| Cursor | `examples/cursor.mcp.json` |
-| HTTP / VPS | `docs/install/vps.md` + `examples/vps.systemd.service` |
-| FastMCP | `docs/install/fastmcp.md` |
+Merge `~/.config/codex-mcp/mcp/*.snippet.json`. Restart app.
 
-## Skill mirrors
+## Do not
 
-`.claude/skills/` · `.codex/skills/` · `.agents/skills/` · `skills/`
-
-## Hand off
-
-Runtime skill **codex-app-mcp**. Call `codex_app_economy` once.
-
-## Never
-
-- OAuth/API keys in JSON or bearer file  
-- Claim success without probe  
-- Full coding sessions in install skill  
+- Write long manual pip/venv tutorials
+- Put OAuth into HTTP bearer
+- Claim success without probe
