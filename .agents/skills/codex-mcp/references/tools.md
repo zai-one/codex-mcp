@@ -1,11 +1,9 @@
 # Tools
 
-**Plan compiler = source of truth** (`session_begin.plan`).
-
 | Tool | Role |
 |---|---|
-| `codex_app_session_begin` | mode + plan + budget + deny + host_script |
-| `codex_app_session_tick` | step / budget_remaining / force_end |
-| `codex_app_session_end` | receipt + budget_report + lesson |
+| `codex_app_session_begin` | plan + budget + session_id |
+| `codex_app_session_next` | **only** host loop — one card |
+| `codex_app_session_end` | receipt + budget_report |
 
-Other tools: only if listed in plan/recommended for this session.
+All other tools appear only inside `card` from `codex_app_session_next`.

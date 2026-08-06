@@ -1,7 +1,8 @@
 # Operate
 
-1. `codex_app_session_begin` with goal + host_budget=small (default).
-2. Read `plan`, `budget`, `host_script`, `deny_tools`.
-3. Call plan tools in order; tick after each meaningful tool (`tool_used`, `step_done`).
-4. If `force_end` or plan done → `codex_app_session_end`.
-5. Do not re-plan in chat; do not open extra references if plan is enough.
+`codex_app_session_begin` → loop `codex_app_session_next` → `codex_app_session_end`.
+
+- `card.kind=host_cmd`: run `card.cmd` (user shell)
+- `card.kind=mcp_tool`: call `card.tool` with `card.args`
+- `card.kind=end`: `codex_app_session_end`
+- `done=true` or `force_end`: stop after end

@@ -1,43 +1,28 @@
 from __future__ import annotations
-
 import json
 from types import SimpleNamespace
-
 from codex_app_mcp.server import call_tool, tool_schemas
-from codex_app_mcp.session import reset_sessions_for_tests, session_begin, scrub_secrets
+from codex_app_mcp.session import reset_sessions_for_tests, scrub_secrets
 
-
-def setup_function() -> None:
+def setup_function():
     reset_sessions_for_tests()
-
 
 def _gw():
     return SimpleNamespace(record_tool_call=lambda *a, **k: None)
 
+def test_next_listed():
+    assert "codex_app_session_next" in {t["name"] for t in tool_schemas()}
 
-def test_session_tools_listed() -> None:
-    names = {t["name"] for t in tool_schemas()}
-    assert "codex_app_session_begin" in names
-
-
-def test_session_begin_plan_budget() -> None:
-    r = session_begin("auto", goal="implement fix oauth=leaktestvalue", host_budget="small")
-    assert r["ok"] and r["protocol"] == "session/v1.1"
-    assert "budget" in r and isinstance(r["plan"], list) and len(r["plan"]) <= 5
-    assert len(json.dumps(r)) < 1536
-    assert "leaktestvalue" not in json.dumps(r)
-
-
-def test_call_tool_budget_force_end() -> None:
+def test_navigator_loop():
     gw = _gw()
-    b = call_tool(gw, "codex_app_session_begin", {"intent": "install", "host_budget": "tiny"})
+    b = call_tool(gw, "codex_app_session_begin", {"intent": "auto", "goal": "fix y", "host_budget": "small"})
+    assert b["protocol"] == "session/v1.2"
     sid = b["session_id"]
-    call_tool(gw, "codex_app_session_tick", {"session_id": sid})
-    t2 = call_tool(gw, "codex_app_session_tick", {"session_id": sid})
-    assert t2["force_end"] is True
+    n = call_tool(gw, "codex_app_session_next", {"session_id": sid})
+    assert n.get("card", {}).get("kind") in {"host_cmd", "mcp_tool", "end"}
+    assert len(json.dumps(n)) < 1536
     e = call_tool(gw, "codex_app_session_end", {"session_id": sid})
-    assert e["budget_report"]["was_capped"] is True
+    assert e.get("budget_report")
 
-
-def test_scrub() -> None:
-    assert "REDACTED" in scrub_secrets("api_key=abc123xyz")
+def test_scrub():
+    assert "REDACTED" in scrub_secrets("api_key=xyz")

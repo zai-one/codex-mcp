@@ -1,5 +1,16 @@
 # codex-app-mcp
 
+## ⚡ Host loop (Session v1.2)
+
+Unofficial bridge. **Save host tokens:**
+
+1. `codex_app_session_begin({"goal":"…","host_budget":"small"})`  
+2. Loop `codex_app_session_next` → do only `card` (`host_cmd` | `mcp_tool` | `end`)  
+3. Stop when `done=true`
+
+Skill **`codex-mcp` v1.0** enforces this. No OAuth in MCP config — CLI login only.
+
+
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![MCP](https://img.shields.io/badge/MCP-stdio%20%7C%20HTTP-purple.svg)](https://modelcontextprotocol.io/)
 [![Version](https://img.shields.io/badge/version-0.5.3-informational.svg)](pyproject.toml)
