@@ -2,11 +2,12 @@
 
 | Mode | Tools |
 |---|---|
-| ready | `codex_app_status`, `codex_app_doctor` |
-| playbook | `codex_app_economy` once/session |
-| brainstorm | light review/status — no large goal |
-| execute | `codex_app_goal` + tokenBudget 16k–40k |
-| verify | compact job/status — no event dumps |
-| ops | discover/runtime only when debugging |
+| always first | `codex_app_session_begin` |
+| progress | `codex_app_session_tick` |
+| finish | `codex_app_session_end` |
+| brainstorm | `codex_app_review`, status |
+| execute | `codex_app_goal` + tokenBudget → job |
+| verify | job/status compact |
+| ops | doctor/discover if broken |
 
-Never huge budgets or full event dumps in host chat.
+verbose only when debugging.

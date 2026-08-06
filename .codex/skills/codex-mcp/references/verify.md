@@ -1,4 +1,3 @@
 # Verify
 
-Poll/status only → summary + tests + paths.  
-Pass → receipt. Fail → one tight re-execute or human.
+begin intent=verify → compact job/status → session_end. No event dumps.

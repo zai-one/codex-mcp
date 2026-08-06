@@ -10,6 +10,7 @@ import time
 from typing import Any, Mapping, Optional, TextIO
 
 from . import __version__
+from .session import session_begin, session_end, session_tick
 from .economy import economy_playbook
 from .audit import emit_audit, goal_fingerprint
 from .client import RpcError, TransportClosed
@@ -104,6 +105,48 @@ def tool_schemas() -> list[dict[str, Any]]:
                 "set token budgets, compact threads, VPS HTTP tips. Call once."
             ),
             "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
+        },
+        {
+            "name": "codex_app_session_begin",
+            "description": "Session Protocol v1: begin compact host session (intent enum). Returns mode, gate, tools, skill_ref. Call first.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "intent": {
+                        "type": "string",
+                        "enum": ["brainstorm", "execute", "verify", "install", "update", "triage", "feedback", "auto"],
+                        "default": "auto",
+                    }
+                },
+            },
+        },
+        {
+            "name": "codex_app_session_tick",
+            "description": "Session Protocol v1: compact progress (state, blockers, host_message). verbose default false.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "job_id": {"type": "string"},
+                    "verbose": {"type": "boolean", "default": False},
+                },
+            },
+        },
+        {
+            "name": "codex_app_session_end",
+            "description": "Session Protocol v1: short receipt; optional scrubbed issue draft (no auto-create).",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "job_id": {"type": "string"},
+                    "suggest_issue": {"type": "boolean", "default": False},
+                    "note": {"type": "string"},
+                },
+            },
         },
         {
             "name": "codex_app_doctor",
@@ -667,6 +710,21 @@ def call_tool(
     try:
         if name == "codex_app_economy":
             result = economy_playbook()
+        elif name == "codex_app_session_begin":
+            result = session_begin(str(args.get("intent") or "auto"))
+        elif name == "codex_app_session_tick":
+            result = session_tick(
+                session_id=str(args.get("session_id") or "") or None,
+                job_id=str(args.get("job_id") or "") or None,
+                verbose=bool(args.get("verbose")),
+            )
+        elif name == "codex_app_session_end":
+            result = session_end(
+                session_id=str(args.get("session_id") or "") or None,
+                job_id=str(args.get("job_id") or "") or None,
+                suggest_issue=bool(args.get("suggest_issue")),
+                note=str(args.get("note") or "") or None,
+            )
         elif name == "codex_app_status":
             result = gateway.status(include_stderr=bool(args.get("includeStderr")))
         elif name == "codex_app_doctor":
