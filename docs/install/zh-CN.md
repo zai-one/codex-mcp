@@ -1,4 +1,8 @@
 # 安装与连接（简体中文）
+> ### ⛔ 先安装 CLI
+>
+> 必须先安装 **Codex CLI** 并完成 `codex login`（同一机器/用户）。见 [START_HERE.md](../START_HERE.md)。技能：`install-codex-mcp`。
+
 
 完整指南：安装 **codex-app-mcp**、通过 stdio 或 HTTP 运行，并连接常见
 MCP 宿主。版本 **0.5.0**。

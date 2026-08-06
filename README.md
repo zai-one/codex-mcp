@@ -3,13 +3,31 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![License](https://img.shields.io/badge/license-see%20repo-lightgrey.svg)](SECURITY.md)
 [![MCP](https://img.shields.io/badge/MCP-stdio%20%7C%20HTTP-purple.svg)](https://modelcontextprotocol.io/)
-[![Version](https://img.shields.io/badge/version-0.5.0-informational.svg)](pyproject.toml)
+[![Version](https://img.shields.io/badge/version-0.5.1-informational.svg)](pyproject.toml)
 
 **One-line pitch:** Governed MCP gateway for **OpenAI Codex app-server** — Claude / Cursor orchestrate with short prompts; Codex on your machine or VPS runs the long coding loop under policy and token budgets.
 
 > ## ⚠️ Unofficial product disclaimer
 >
 > **This is a community project.** It is **not** an official product of **OpenAI**, **Codex**, Anthropic, xAI, or Grok. It is not affiliated with, endorsed by, or supported by those companies. Use at your own risk. Auth stays on your machine via the local Codex CLI session (`codex login` → `CODEX_HOME`). **Never** put OpenAI/Codex OAuth or API keys in MCP config or in the HTTP bearer field.
+
+---
+
+
+## ⛔ Works only if Codex CLI is installed + logged in
+
+This repository is an **MCP gateway**, not Codex itself.
+
+| You must already have… | Check |
+|---|---|
+| **Codex CLI** on the machine that runs the MCP | `codex --version` |
+| A completed **`codex login`** for that OS user | session under `CODEX_HOME` |
+| This package installed + roots set | Quickstart below |
+
+**New here?** Read **[docs/START_HERE.md](docs/START_HERE.md)** first (plain English).
+
+Or ask an agent: *use skill `install-codex-mcp`* (requires CLI+login already).  
+Skills: `.claude/skills/`, `.codex/skills/`, `.agents/skills/`.
 
 ---
 
@@ -68,6 +86,8 @@ codex-app-mcp --transport http --host 127.0.0.1 --port 8765
 | Español | [docs/install/es.md](docs/install/es.md) |
 | FastMCP | [docs/install/fastmcp.md](docs/install/fastmcp.md) |
 | VPS | [docs/install/vps.md](docs/install/vps.md) |
+| **START HERE** | [docs/START_HERE.md](docs/START_HERE.md) |
+| Skills | [docs/SKILLS.md](docs/SKILLS.md) |
 | Economy | [docs/economy.md](docs/economy.md) |
 
 Also: [REFERENCE](docs/REFERENCE.md) · [VERIFICATION](docs/VERIFICATION.md) · [SECURITY](SECURITY.md) · [MIGRATION](docs/MIGRATION.md)

@@ -1,4 +1,8 @@
 # Instalación y conexión (español)
+> ### ⛔ Primero el CLI
+>
+> Este MCP **no funciona** sin **Codex CLI** y `codex login` en la misma máquina/usuario. Ver [START_HERE.md](../START_HERE.md). Skill: `install-codex-mcp`.
+
 
 Guía completa para instalar **codex-app-mcp**, ejecutarlo por stdio o HTTP y
 conectar hosts MCP habituales. Versión **0.5.0**.
