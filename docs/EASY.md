@@ -47,3 +47,7 @@ source ~/.config/codex-mcp/env
 - Economy: `docs/economy.md`
 
 No multi-step manual pip install in public docs — use the script.
+
+## Agent skill
+
+Use router skill **`codex-mcp`** ([SKILLS.md](SKILLS.md)).

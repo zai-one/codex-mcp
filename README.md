@@ -30,6 +30,8 @@ source ~/.config/codex-mcp/env
 
 Merge `~/.config/codex-mcp/mcp/claude_desktop.snippet.json` → restart → `codex_app_status`.
 
+**Skill (router):** `codex-mcp` — see [docs/SKILLS.md](docs/SKILLS.md)
+
 **Full easy guide:** [docs/EASY.md](docs/EASY.md)
 
 | Language | Page |
