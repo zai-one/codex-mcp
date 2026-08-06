@@ -10,6 +10,7 @@ import time
 from typing import Any, Mapping, Optional, TextIO
 
 from . import __version__
+from .economy import economy_playbook
 from .audit import emit_audit, goal_fingerprint
 from .client import RpcError, TransportClosed
 from .errors import GatewayError, error_envelope
@@ -95,6 +96,14 @@ def tool_schemas() -> list[dict[str, Any]]:
                 {"includeStderr": {"type": "boolean"}},
                 [],
             ),
+        },
+        {
+            "name": "codex_app_economy",
+            "description": (
+                "Token-economy playbook for host agents: offload coding to Codex, "
+                "set token budgets, compact threads, VPS HTTP tips. Call once."
+            ),
+            "inputSchema": {"type": "object", "additionalProperties": False, "properties": {}},
         },
         {
             "name": "codex_app_doctor",
@@ -656,7 +665,9 @@ def call_tool(
 ) -> dict[str, Any]:
     started_at = time.monotonic()
     try:
-        if name == "codex_app_status":
+        if name == "codex_app_economy":
+            result = economy_playbook()
+        elif name == "codex_app_status":
             result = gateway.status(include_stderr=bool(args.get("includeStderr")))
         elif name == "codex_app_doctor":
             result = gateway.doctor()
