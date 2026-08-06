@@ -1,7 +1,7 @@
 # Install and connect (English)
 
 Complete guide to install **codex-app-mcp**, run it over stdio or HTTP, and
-connect popular MCP hosts. Version **0.4.0**.
+connect popular MCP hosts. Version **0.5.0**.
 
 Other languages: [Русский](ru.md) · [简体中文](zh-CN.md) · [Español](es.md)
 
@@ -387,3 +387,69 @@ Full policy: [SECURITY.md](../../SECURITY.md).
 - [Migration](../MIGRATION.md) — from removed `codex_delegate`
 - [Contributing](../../CONTRIBUTING.md)
 - [Security](../../SECURITY.md)
+
+
+---
+
+## Disclaimer (unofficial product)
+
+> **This is a community project.** It is **not** an official product of
+> **OpenAI**, **Codex**, Anthropic, xAI, or Grok. Not affiliated with or
+> endorsed by those companies. Auth stays on the machine via **local Codex CLI**
+> (`codex login` → `CODEX_HOME`). **Never** put OpenAI/Codex OAuth or API keys
+> in MCP config or in the HTTP bearer field.
+
+---
+
+## Token economy
+
+Host agents orchestrate with short tool calls; **Codex app-server** runs the
+long coding loop under a token budget (local or VPS).
+
+| Env | Purpose |
+|---|---|
+| `CODEX_APP_MCP_ECONOMY=1` | Economy-aware host playbook defaults |
+
+Session tool: **`codex_app_economy`**. Prefer `codex_app_goal` with tight
+objective + `tokenBudget` (e.g. 16k–40k). Poll status; avoid replaying full
+histories into the host chat.
+
+Full guide: [../economy.md](../economy.md).
+
+---
+
+## FastMCP
+
+| Path | How |
+|---|---|
+| Local stdio | Spawn `codex-app-mcp` / `python -m codex_app_mcp` |
+| Remote proxy | Native HTTP MCP + TLS; FastMCP `create_proxy` + operator bearer |
+
+[fastmcp.md](fastmcp.md) · [../../examples/fastmcp_proxy.py](../../examples/fastmcp_proxy.py)
+
+---
+
+## VPS (HTTP already native)
+
+```bash
+export CODEX_APP_MCP_ALLOWED_ROOTS="<PROJECT_ROOT>"
+export CODEX_APP_MCP_HTTP_TOKEN_FILE="<TOKEN_FILE>"
+codex-app-mcp --transport http --host 127.0.0.1 --port 8765
+# TLS reverse proxy → https://mcp.example.invalid/mcp
+```
+
+- Bearer = operator CSPRNG secret — **not** OpenAI OAuth  
+- systemd: [../../examples/vps.systemd.service](../../examples/vps.systemd.service)  
+- env: [../../examples/http.env.example](../../examples/http.env.example)  
+- guide: [vps.md](vps.md)
+
+---
+
+## Economy environment variables
+
+| Variable | Description |
+|---|---|
+| `CODEX_APP_MCP_ECONOMY` | `1` / `true` / `on` enables economy playbook mode |
+| `CODEX_APP_MCP_HTTP_TOKEN` | HTTP bearer (env); exclusive with token file |
+| `CODEX_APP_MCP_HTTP_TOKEN_FILE` | Preferred path (`<TOKEN_FILE>`) |
+| `CODEX_APP_MCP_HTTP_HOST` / `PORT` | Defaults `127.0.0.1` / `8765` |

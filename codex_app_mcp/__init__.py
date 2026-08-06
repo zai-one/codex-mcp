@@ -1,6 +1,6 @@
 """Governed MCP gateway for the Codex app-server JSON-RPC protocol."""
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from .client import AppServerClient, RpcError, TransportClosed
 from .gateway import CodexAppGateway
