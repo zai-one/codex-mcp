@@ -51,3 +51,10 @@ No multi-step manual pip install in public docs — use the script.
 ## Agent skill
 
 Use router skill **`codex-mcp`** ([SKILLS.md](SKILLS.md)).
+
+## After install (Session Protocol)
+
+1. Wire host MCP snippet.
+2. Call **`codex_app_session_begin`** (`intent: "auto"`).
+3. Follow recommended tools → **`codex_app_session_end`**.
+4. Skill: `codex-mcp` v0.8.

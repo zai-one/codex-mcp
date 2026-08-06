@@ -1,3 +1,7 @@
+## Session Protocol
+
+Prefer `codex_app_session_begin` over re-reading this file.
+
 # Token economy (English)
 
 > ## ⚠️ Unofficial product disclaimer
