@@ -593,7 +593,7 @@ def test_mcp_call_obeys_allowlist(allowed_root: Path) -> None:
 
 def test_tool_schema_is_small_and_strict() -> None:
     tools = tool_schemas()
-    assert len(tools) == 24
+    assert len(tools) == 25
     assert "codex_app_doctor" in {tool["name"] for tool in tools}
     assert len({tool["name"] for tool in tools}) == len(tools)
     assert all(tool["inputSchema"]["additionalProperties"] is False for tool in tools)
@@ -606,7 +606,7 @@ def test_mcp_initialize_and_tools_list(
     initialized = handle_jsonrpc({"id": 1, "method": "initialize", "params": {}}, app)
     assert initialized["result"]["serverInfo"]["name"] == "codex-app-mcp"
     listed = handle_jsonrpc({"id": 2, "method": "tools/list", "params": {}}, app)
-    assert len(listed["result"]["tools"]) == 24
+    assert len(listed["result"]["tools"]) == 25
 
 
 def test_mcp_jsonrpc_batch(gateway: tuple[CodexAppGateway, FakeClient]) -> None:
@@ -649,7 +649,7 @@ def test_mcp_stdio_does_not_start_app_server_for_tools_list(
     serve_stdio(stdin=source, stdout=sink, gateway=app)
     rows = [json.loads(line) for line in sink.getvalue().splitlines()]
     assert rows[0]["result"]["serverInfo"]["name"] == "codex-app-mcp"
-    assert len(rows[1]["result"]["tools"]) == 24
+    assert len(rows[1]["result"]["tools"]) == 25
     assert client.requests == []
 
 
@@ -1229,7 +1229,7 @@ def test_http_transport_health_auth_and_tools_list(
         with urlopen(authorized, timeout=2) as response:
             payload = json.load(response)
         assert payload["id"] == 2
-        assert len(payload["result"]["tools"]) == 24
+        assert len(payload["result"]["tools"]) == 25
     finally:
         server.shutdown()
         server.server_close()
@@ -1318,7 +1318,7 @@ def test_http_current_protocol_headers_are_validated(
         )
         with urlopen(request, timeout=2) as response:
             payload = json.load(response)
-        assert len(payload["result"]["tools"]) == 24
+        assert len(payload["result"]["tools"]) == 25
 
         mismatch = Request(
             endpoint,

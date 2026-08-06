@@ -65,3 +65,9 @@ Use router skill **`codex-mcp`** ([SKILLS.md](SKILLS.md)).
 2. Follow returned **`plan`** tools only (see `host_script`).
 3. **`session_tick`** until done/`force_end`, then **`session_end`**.
 4. Skill `codex-mcp` v0.9 — do not re-plan in prose.
+
+## Navigator (v1.2)
+
+1. `codex_app_session_begin` with goal + host_budget=small  
+2. Loop **`codex_app_session_next`** — do only what `card` says  
+3. Stop when `done=true`

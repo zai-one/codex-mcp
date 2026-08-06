@@ -10,7 +10,7 @@ import time
 from typing import Any, Mapping, Optional, TextIO
 
 from . import __version__
-from .session import session_begin, session_end, session_tick
+from .session import session_begin, session_end, session_next, session_tick
 from .economy import economy_playbook
 from .audit import emit_audit, goal_fingerprint
 from .client import RpcError, TransportClosed
@@ -108,7 +108,7 @@ def tool_schemas() -> list[dict[str, Any]]:
         },
         {
             "name": "codex_app_session_begin",
-            "description": "Session Protocol v1.1: plan compiler + budget guard. intent, goal, host_budget. Returns plan, budget, deny_tools, host_script.",
+            "description": "Session Protocol v1.2: plan compiler + budget guard. intent, goal, host_budget. Returns plan, budget, deny_tools, host_script.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": False,
@@ -126,7 +126,7 @@ def tool_schemas() -> list[dict[str, Any]]:
         },
         {
             "name": "codex_app_session_tick",
-            "description": "Session Protocol v1.1: progress + budget (step, force_end). tool_used/step_done optional.",
+            "description": "Session Protocol v1.2: progress + budget (step, force_end). tool_used/step_done optional.",
             "inputSchema": {
                 "type": "object",
                 "additionalProperties": False,
@@ -136,6 +136,19 @@ def tool_schemas() -> list[dict[str, Any]]:
                     "verbose": {"type": "boolean", "default": False},
                     "tool_used": {"type": "string"},
                     "step_done": {"type": "boolean", "default": False},
+                },
+            },
+        },
+        {
+            "name": "codex_app_session_next",
+            "description": "Session Protocol v1.2 navigator: ONE next action card (host_cmd|mcp_tool|end). Loop until done=true.",
+            "inputSchema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "advance": {"type": "boolean", "default": True},
+                    "note": {"type": "string"},
                 },
             },
         },
@@ -734,6 +747,13 @@ def call_tool(
                 verbose=bool(args.get("verbose")),
                 tool_used=str(args.get("tool_used") or "") or None,
                 step_done=bool(args.get("step_done")),
+            )
+        elif name == "codex_app_session_next":
+            adv = args.get("advance")
+            result = session_next(
+                session_id=str(args.get("session_id") or "") or None,
+                advance=True if adv is None else bool(adv),
+                note=str(args.get("note") or "") or None,
             )
         elif name == "codex_app_session_end":
             result = session_end(

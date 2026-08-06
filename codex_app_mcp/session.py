@@ -1,4 +1,4 @@
-"""Adaptive Session Protocol v1.1 for codex-app-mcp — plan compiler + budget guard."""
+"""Adaptive Session Protocol v1.2 for codex-app-mcp — plan + budget + navigator."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ _ALLOW = frozenset(
     {
         "codex_app_session_begin",
         "codex_app_session_tick",
+        "codex_app_session_next",
         "codex_app_session_end",
         "codex_app_status",
         "codex_app_economy",
@@ -53,16 +54,15 @@ _SECRETISH = re.compile(
     r"|xai-[a-z0-9]+"
     r")"
 )
-
 _ROUTES: dict[str, dict[str, Any]] = {
-    "install": {"mode": "install", "skill_ref": "references/install.md", "tools": [], "prefer": "install", "next": "Install + codex login; re-begin."},
-    "update": {"mode": "update", "skill_ref": "references/update.md", "tools": [], "prefer": "update", "next": "update_mcp.sh then begin."},
-    "triage": {"mode": "triage", "skill_ref": "references/security.md", "tools": ["codex_app_status", "codex_app_doctor"], "prefer": "consult", "next": "Fix gate; feedback if product bug."},
-    "brainstorm": {"mode": "brainstorm", "skill_ref": "references/brainstorm.md", "tools": ["codex_app_review", "codex_app_status"], "prefer": "consult", "next": "Light tools only; no large goals."},
-    "execute": {"mode": "execute", "skill_ref": "references/execute.md", "tools": ["codex_app_goal", "codex_app_job"], "prefer": "goal", "next": "Tight goal + tokenBudget → job → end."},
-    "verify": {"mode": "verify", "skill_ref": "references/verify.md", "tools": ["codex_app_job", "codex_app_status"], "prefer": "consult", "next": "Compact status only."},
-    "feedback": {"mode": "feedback", "skill_ref": "references/feedback.md", "tools": [], "prefer": "consult", "next": "Scrubbed issue draft."},
-    "operate": {"mode": "operate", "skill_ref": "references/operate.md", "tools": ["codex_app_status", "codex_app_economy"], "prefer": "consult", "next": "Pick mode by task size."},
+    "install": {"mode": "install", "skill_ref": "references/install.md", "tools": [], "prefer": "install", "next": "Install + login; session_next."},
+    "update": {"mode": "update", "skill_ref": "references/update.md", "tools": [], "prefer": "update", "next": "Update then end."},
+    "triage": {"mode": "triage", "skill_ref": "references/security.md", "tools": ["codex_app_status", "codex_app_doctor"], "prefer": "consult", "next": "Diagnose gate."},
+    "brainstorm": {"mode": "brainstorm", "skill_ref": "references/brainstorm.md", "tools": ["codex_app_review"], "prefer": "consult", "next": "Light review."},
+    "execute": {"mode": "execute", "skill_ref": "references/execute.md", "tools": ["codex_app_goal", "codex_app_job"], "prefer": "goal", "next": "Goal → job → end."},
+    "verify": {"mode": "verify", "skill_ref": "references/verify.md", "tools": ["codex_app_job", "codex_app_status"], "prefer": "consult", "next": "Status only."},
+    "feedback": {"mode": "feedback", "skill_ref": "references/feedback.md", "tools": [], "prefer": "consult", "next": "Issue draft."},
+    "operate": {"mode": "operate", "skill_ref": "references/operate.md", "tools": ["codex_app_status"], "prefer": "consult", "next": "Pick mode."},
 }
 _DENY = {
     "brainstorm": ["codex_app_goal"],
@@ -71,7 +71,6 @@ _DENY = {
     "update": ["codex_app_goal"],
     "feedback": ["codex_app_goal"],
 }
-
 _sessions: dict[str, dict[str, Any]] = {}
 _compact_session = False
 
@@ -107,12 +106,11 @@ def _shrink(obj: dict[str, Any]) -> dict[str, Any]:
     if _json_size(out) > _PAYLOAD_SOFT_MAX:
         out = {
             "ok": out.get("ok", True),
-            "protocol": "session/v1.1",
+            "protocol": "session/v1.2",
             "session_id": out.get("session_id"),
-            "mode": out.get("mode"),
-            "plan": (out.get("plan") or [])[:3],
-            "host_script": out.get("host_script"),
-            "force_end": out.get("force_end"),
+            "done": out.get("done"),
+            "card": out.get("card"),
+            "host_message": out.get("host_message"),
             "truncated": True,
         }
     return out
@@ -159,11 +157,25 @@ def _step(i: int, tool: str, why: str, args_hint: dict[str, Any] | None = None) 
 
 def compile_plan(mode: str, goal: str, ready: bool) -> list[dict[str, Any]]:
     g = _clip(scrub_secrets(goal), 200) if goal else ""
-    if mode in {"install", "update", "feedback"} or (not ready and mode not in {"triage"}):
-        return []
+    if mode == "install" or (not ready and mode not in {"triage", "update", "feedback"}):
+        return [
+            _step(1, "codex_app_session_next", "Install card"),
+            _step(2, "codex_app_session_next", "Login card"),
+            _step(3, "codex_app_session_end", "Receipt"),
+        ]
+    if mode == "update":
+        return [
+            _step(1, "codex_app_session_next", "Update card"),
+            _step(2, "codex_app_session_end", "Receipt"),
+        ]
+    if mode == "feedback":
+        return [
+            _step(1, "codex_app_session_next", "Issue card"),
+            _step(2, "codex_app_session_end", "Done"),
+        ]
     if mode == "triage":
         return [
-            _step(1, "codex_app_status", "Probe connection"),
+            _step(1, "codex_app_status", "Probe"),
             _step(2, "codex_app_doctor", "Diagnose"),
             _step(3, "codex_app_session_end", "Receipt"),
         ]
@@ -175,9 +187,8 @@ def compile_plan(mode: str, goal: str, ready: bool) -> list[dict[str, Any]]:
     if mode == "execute":
         return [
             _step(1, "codex_app_goal", "Tight goal", {"objective": g, "tokenBudget": ECONOMY_DEFAULT_TOKEN_BUDGET} if g else {"tokenBudget": ECONOMY_DEFAULT_TOKEN_BUDGET}),
-            _step(2, "codex_app_session_tick", "Budget/progress"),
-            _step(3, "codex_app_job", "Compact job status"),
-            _step(4, "codex_app_session_end", "Receipt"),
+            _step(2, "codex_app_job", "Compact job"),
+            _step(3, "codex_app_session_end", "Receipt"),
         ]
     if mode == "verify":
         return [
@@ -187,8 +198,7 @@ def compile_plan(mode: str, goal: str, ready: bool) -> list[dict[str, Any]]:
         ]
     return [
         _step(1, "codex_app_status", "Once"),
-        _step(2, "codex_app_economy", "Playbook once"),
-        _step(3, "codex_app_session_end", "Or pick mode"),
+        _step(2, "codex_app_session_end", "Or re-begin with intent"),
     ]
 
 
@@ -201,10 +211,10 @@ def session_begin(
 ) -> dict[str, Any]:
     intent_n = (intent or "auto").strip().lower()
     if intent_n not in INTENTS:
-        return {"ok": False, "error_code": "INTENT_INVALID", "error": "bad intent", "protocol": "session/v1.1"}
+        return {"ok": False, "error_code": "INTENT_INVALID", "protocol": "session/v1.2"}
     hb = (host_budget or "small").strip().lower()
     if hb not in HOST_BUDGETS:
-        return {"ok": False, "error_code": "BUDGET_INVALID", "error": "bad host_budget", "protocol": "session/v1.1"}
+        return {"ok": False, "error_code": "BUDGET_INVALID", "protocol": "session/v1.2"}
     goal_s = scrub_secrets(_clip(goal or "", _GOAL_MAX))
     enable_session_economy()
     gate = resolve_gate()
@@ -215,9 +225,9 @@ def session_begin(
     plan = compile_plan(mode, goal_s, bool(gate.get("ready")))
     tools = [t for t in route["tools"] if t in _ALLOW]
     rec: list[str] = []
-    for t in [s["tool"] for s in plan] + tools + ["codex_app_session_tick", "codex_app_session_end"]:
-        if t in _ALLOW and t not in rec:
-            rec.append(t)
+    for tname in ["codex_app_session_next"] + [s["tool"] for s in plan] + tools + ["codex_app_session_end"]:
+        if tname in _ALLOW and tname not in rec:
+            rec.append(tname)
     preset = dict(_BUDGET_PRESETS[hb])
     if max_tool_calls is not None:
         try:
@@ -229,13 +239,14 @@ def session_begin(
         "max_tool_calls": preset["max_tool_calls"],
         "max_polls": preset["max_polls"],
         "prefer": route["prefer"],
-        "stop_when": "plan done or budget exhausted or force_end",
+        "stop_when": "session_next done=true or budget exhausted",
     }
     deny = [t for t in _DENY.get(mode, []) if t in _ALLOW]
     sid = uuid.uuid4().hex[:12]
     _sessions[sid] = {
         "session_id": sid,
         "mode": mode,
+        "goal": goal_s,
         "plan": plan,
         "plan_step": 0,
         "budget": budget,
@@ -244,16 +255,9 @@ def session_begin(
         "polls_used": 0,
         "job_id": None,
     }
-    if plan:
-        tools_s = " → ".join(s["tool"].replace("codex_app_", "") for s in plan[:5])
-        script = _clip(f"Follow plan only ({tools_s}). Caps tools={budget['max_tool_calls']} polls={budget['max_polls']}. session_end when done.", _SCRIPT_MAX)
-    elif mode == "install":
-        script = _clip("Install codex-mcp + codex login + roots; session_begin again.", _SCRIPT_MAX)
-    else:
-        script = _clip(route["next"], _SCRIPT_MAX)
     out: dict[str, Any] = {
         "ok": True,
-        "protocol": "session/v1.1",
+        "protocol": "session/v1.2",
         "session_id": sid,
         "mode": mode,
         "gate_status": {
@@ -268,17 +272,18 @@ def session_begin(
         "plan": plan,
         "budget": budget,
         "deny_tools": deny,
-        "host_script": script,
+        "host_script": _clip(
+            f"Call codex_app_session_next until done=true (tools≤{budget['max_tool_calls']}). Do not invent tools.",
+            _SCRIPT_MAX,
+        ),
         "defaults": {"tokenBudget": ECONOMY_DEFAULT_TOKEN_BUDGET},
         "economy_flags": {"economy": True, "compact": True, "verbose_default": False},
         "skill_ref": route["skill_ref"],
-        "next_step": route["next"],
+        "next_step": "session_next",
         "disclaimer": "Unofficial — not OpenAI/Codex.",
     }
     if goal_s:
         out["goal_echo"] = goal_s
-    if not gate.get("ready"):
-        out["next_step"] = "Gate failed: codex CLI + login + roots."
     return _shrink(out)
 
 
@@ -304,77 +309,228 @@ def session_tick(
             tu = str(tool_used).strip()
             if tu in set(sess.get("deny_tools") or []):
                 warns.append(f"tool_denied:{tu}")
-            if tu and tu not in _ALLOW:
+            elif tu and tu not in _ALLOW:
                 warns.append(f"tool_unknown:{tu}")
             elif tu:
                 sess["tool_calls_used"] = int(sess.get("tool_calls_used") or 0) + 1
         if step_done:
             sess["plan_step"] = min(int(sess.get("plan_step") or 0) + 1, len(sess.get("plan") or []))
-    state, phase, pct = "idle", "waiting", 0
-    blockers = list(warns)
-    suggested = "Follow plan; session_end when done."
-    host_message = "No active job."
-    snap = dict(job_snapshot or {})
-    if jid and not snap:
-        state = "unknown_job"
-        blockers.append("JOB_LOOKUP_LOCAL_ONLY")
-        host_message = f"Use codex_app_job for {jid}."
-        suggested = "codex_app_job or session_end"
-    elif snap:
-        if sess is not None:
-            sess["job_id"] = jid or snap.get("job_id")
-        state = str(snap.get("state") or snap.get("status") or "running")
-        st = state.lower()
-        if st in {"completed", "ok", "success", "done", "succeeded"}:
-            pct, phase, suggested = 100, "done", "session_end"
-        elif st in {"failed", "error", "cancelled", "canceled"}:
-            pct, phase = 100, "failed"
-            blockers.append(str(snap.get("error") or st))
-            suggested = "session_end"
-        else:
-            pct, phase, suggested = 50, "running", "compact poll only"
-        host_message = _clip(f"{state} job={jid or snap.get('job_id')}", _HOST_MSG_MAX)
     plan = list((sess or {}).get("plan") or [])
     step_i = int((sess or {}).get("plan_step") or 0)
-    steps_left = max(0, len(plan) - step_i)
     budget = dict((sess or {}).get("budget") or _BUDGET_PRESETS["small"])
     used_t = int((sess or {}).get("tool_calls_used") or 0)
     used_p = int((sess or {}).get("polls_used") or 0)
     max_t = int(budget.get("max_tool_calls") or 6)
     max_p = int(budget.get("max_polls") or 4)
-    force_end = bool(
-        used_t >= max_t
-        or used_p >= max_p
-        or (bool(plan) and steps_left == 0 and state in {"idle", "done", "completed", "failed", "succeeded"})
+    force_end = bool(used_t >= max_t or used_p >= max_p or (bool(plan) and step_i >= len(plan)))
+    return _shrink(
+        {
+            "ok": True,
+            "protocol": "session/v1.2",
+            "session_id": sid,
+            "job_id": jid,
+            "state": "idle",
+            "step": step_i,
+            "steps_left": max(0, len(plan) - step_i),
+            "budget_remaining": {"tool_calls": max(0, max_t - used_t), "polls": max(0, max_p - used_p)},
+            "force_end": force_end,
+            "blockers": warns[:8],
+            "suggested_host_action": "session_end" if force_end else "session_next",
+            "host_message": "Prefer session_next over ad-hoc tools.",
+            "economy_compact": not verbose,
+        }
     )
-    if used_t >= max_t:
-        blockers.append("BUDGET_TOOLS")
-    if used_p >= max_p:
-        blockers.append("BUDGET_POLLS")
-    if force_end:
-        suggested = "session_end"
-    out: dict[str, Any] = {
-        "ok": True,
-        "protocol": "session/v1.1",
-        "session_id": sid,
-        "job_id": jid,
-        "state": state,
-        "phase": phase,
-        "percent": pct,
-        "step": step_i,
-        "steps_left": steps_left,
-        "budget_remaining": {"tool_calls": max(0, max_t - used_t), "polls": max(0, max_p - used_p)},
-        "force_end": force_end,
-        "changed_files_count": int(snap.get("changed_files_count") or 0),
-        "tests_summary": snap.get("tests_summary"),
-        "blockers": blockers[:8],
-        "suggested_host_action": suggested,
-        "host_message": scrub_secrets(host_message)[:_HOST_MSG_MAX],
-        "economy_compact": not verbose,
+
+
+def session_next(
+    *,
+    session_id: str | None = None,
+    advance: bool = True,
+    note: str | None = None,
+) -> dict[str, Any]:
+    enable_session_economy()
+    sid = (session_id or "").strip() or None
+    sess = _sessions.get(sid) if sid else None
+    if sess is None:
+        return _shrink(
+            {
+                "ok": False,
+                "error_code": "SESSION_UNKNOWN",
+                "protocol": "session/v1.2",
+                "done": True,
+                "card": {"kind": "end", "why": "call session_begin first"},
+            }
+        )
+    sess["polls_used"] = int(sess.get("polls_used") or 0) + 1
+    sess["tool_calls_used"] = int(sess.get("tool_calls_used") or 0) + 1
+    budget = dict(sess.get("budget") or _BUDGET_PRESETS["small"])
+    max_t = int(budget.get("max_tool_calls") or 6)
+    max_p = int(budget.get("max_polls") or 4)
+    used_t = int(sess.get("tool_calls_used") or 0)
+    used_p = int(sess.get("polls_used") or 0)
+    plan = list(sess.get("plan") or [])
+    step_i = int(sess.get("plan_step") or 0)
+    mode = str(sess.get("mode") or "operate")
+    goal = str(sess.get("goal") or "")
+    rem = {"tool_calls": max(0, max_t - used_t), "polls": max(0, max_p - used_p)}
+
+    if used_t >= max_t or used_p >= max_p:
+        return _shrink(
+            {
+                "ok": True,
+                "protocol": "session/v1.2",
+                "session_id": sid,
+                "done": True,
+                "force_end": True,
+                "card": {"kind": "end", "tool": "codex_app_session_end", "args": {"session_id": sid}, "why": "budget"},
+                "host_message": "Budget exhausted — session_end.",
+                "budget_remaining": rem,
+            }
+        )
+
+    if mode == "install" and step_i == 0:
+        if advance:
+            sess["plan_step"] = 1
+        return _shrink(
+            {
+                "ok": True,
+                "protocol": "session/v1.2",
+                "session_id": sid,
+                "done": False,
+                "card": {
+                    "kind": "host_cmd",
+                    "cmd": "curl -fsSL https://raw.githubusercontent.com/zai-one/codex-mcp/main/scripts/install.sh | bash",
+                    "why": "EASY install",
+                },
+                "host_message": "Run install, then codex login, then session_next.",
+                "budget_remaining": rem,
+            }
+        )
+    if mode == "install" and step_i == 1:
+        if advance:
+            sess["plan_step"] = 2
+        return _shrink(
+            {
+                "ok": True,
+                "protocol": "session/v1.2",
+                "session_id": sid,
+                "done": False,
+                "card": {"kind": "host_cmd", "cmd": "codex login && codex --version", "why": "Auth gate"},
+                "host_message": "Login if needed, then session_next/end.",
+                "budget_remaining": rem,
+            }
+        )
+    if mode == "update" and step_i == 0:
+        if advance:
+            sess["plan_step"] = 1
+        return _shrink(
+            {
+                "ok": True,
+                "protocol": "session/v1.2",
+                "session_id": sid,
+                "done": False,
+                "card": {
+                    "kind": "host_cmd",
+                    "cmd": "bash skills/codex-mcp/scripts/update_mcp.sh 2>/dev/null || curl -fsSL https://raw.githubusercontent.com/zai-one/codex-mcp/main/scripts/install.sh | bash",
+                    "why": "Update",
+                },
+                "host_message": "Run update, then session_end.",
+                "budget_remaining": rem,
+            }
+        )
+    if mode == "feedback" and step_i == 0:
+        if advance:
+            sess["plan_step"] = 1
+        return _shrink(
+            {
+                "ok": True,
+                "protocol": "session/v1.2",
+                "session_id": sid,
+                "done": False,
+                "card": {
+                    "kind": "mcp_tool",
+                    "tool": "codex_app_session_end",
+                    "args": {
+                        "session_id": sid,
+                        "suggest_issue": True,
+                        "note": scrub_secrets(_clip(note or goal or "bug", 200)),
+                    },
+                    "why": "Issue draft",
+                },
+                "host_message": "session_end with suggest_issue.",
+                "budget_remaining": rem,
+            }
+        )
+
+    while step_i < len(plan) and plan[step_i].get("tool") == "codex_app_session_next":
+        step_i += 1
+        if advance:
+            sess["plan_step"] = step_i
+
+    if step_i >= len(plan):
+        return _shrink(
+            {
+                "ok": True,
+                "protocol": "session/v1.2",
+                "session_id": sid,
+                "done": True,
+                "force_end": True,
+                "card": {
+                    "kind": "end",
+                    "tool": "codex_app_session_end",
+                    "args": {"session_id": sid},
+                    "why": "plan complete",
+                },
+                "host_message": "session_end now.",
+                "budget_remaining": rem,
+            }
+        )
+
+    step = plan[step_i]
+    tool = step.get("tool")
+    if tool == "codex_app_session_end":
+        if advance:
+            sess["plan_step"] = step_i + 1
+        return _shrink(
+            {
+                "ok": True,
+                "protocol": "session/v1.2",
+                "session_id": sid,
+                "done": True,
+                "force_end": True,
+                "card": {
+                    "kind": "end",
+                    "tool": "codex_app_session_end",
+                    "args": {"session_id": sid},
+                    "why": step.get("why") or "end",
+                },
+                "host_message": "Call session_end.",
+                "budget_remaining": rem,
+            }
+        )
+
+    card = {
+        "kind": "mcp_tool",
+        "tool": tool,
+        "args": dict(step.get("args_hint") or {}),
+        "why": step.get("why") or "",
     }
-    if verbose and snap:
-        out["job"] = dict(snap)
-    return _shrink(out)
+    if advance:
+        sess["plan_step"] = step_i + 1
+    return _shrink(
+        {
+            "ok": True,
+            "protocol": "session/v1.2",
+            "session_id": sid,
+            "done": False,
+            "step": step_i,
+            "steps_left": max(0, len(plan) - step_i - 1),
+            "card": card,
+            "host_message": _clip(f"Call {tool}, then session_next.", 200),
+            "budget_remaining": rem,
+            "disclaimer": "Unofficial — not OpenAI/Codex.",
+        }
+    )
 
 
 def session_end(
@@ -398,19 +554,18 @@ def session_end(
     max_t = int(budget.get("max_tool_calls") or 6)
     max_p = int(budget.get("max_polls") or 4)
     was_capped = used_t >= max_t or used_p >= max_p
-    receipt = {
-        "status": status,
-        "job": jid or "none",
-        "changed": "n/a",
-        "tests": "n/a",
-        "next": _clip(scrub_secrets(note or "Done."), 200),
-        "blockers": [],
-    }
     out: dict[str, Any] = {
         "ok": True,
-        "protocol": "session/v1.1",
+        "protocol": "session/v1.2",
         "session_id": sid,
-        "receipt": receipt,
+        "receipt": {
+            "status": status,
+            "job": jid or "none",
+            "changed": "n/a",
+            "tests": "n/a",
+            "next": _clip(scrub_secrets(note or "Done."), 200),
+            "blockers": [],
+        },
         "budget_report": {
             "tool_calls_used": used_t,
             "polls_used": used_p,
@@ -418,12 +573,15 @@ def session_end(
             "max_polls": max_p,
             "was_capped": was_capped,
         },
-        "lesson": _clip(scrub_secrets(f"mode={(sess or {}).get('mode')}; budget={'capped' if was_capped else 'ok'}"), _LESSON_MAX),
-        "host_message": _clip(f"{status}: job={receipt['job']}", _HOST_MSG_MAX),
+        "lesson": _clip(
+            scrub_secrets(f"mode={(sess or {}).get('mode')}; use session_next; budget={'capped' if was_capped else 'ok'}"),
+            _LESSON_MAX,
+        ),
+        "host_message": _clip(f"{status}: job={jid or 'none'}", _HOST_MSG_MAX),
         "disclaimer": "Unofficial — not OpenAI/Codex.",
     }
     if suggest_issue:
-        draft = f"## Summary\nSession {sid}\n## Job\n{jid}\n## Free-form\n{scrub_secrets(note or '')}\n"
+        draft = f"## Summary\nSession {sid}\n## Free-form\n{scrub_secrets(note or '')}\n"
         out["suggest_issue"] = True
         out["issue_draft"] = scrub_secrets(_clip(draft, 1200))
         out["issue_repo"] = "zai-one/codex-mcp"
