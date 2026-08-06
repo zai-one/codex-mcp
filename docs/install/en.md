@@ -1,5 +1,13 @@
 # Install and connect (English)
 
+> ### ⛔ Before anything else
+>
+> This MCP **only works** after **Codex CLI (`codex login`)** is installed and authenticated on the
+> **same machine/user** that runs the server.  
+> Plain-English checklist: **[START_HERE.md](../START_HERE.md)**.  
+> Agent setup: skill **install-codex-mcp**.
+
+
 Complete guide to install **codex-app-mcp**, run it over stdio or HTTP, and
 connect popular MCP hosts. Version **0.5.0**.
 

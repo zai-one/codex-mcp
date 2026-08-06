@@ -19,11 +19,16 @@ def economy_playbook() -> dict[str, Any]:
     return {
         "ok": True,
         "economy": True,
+        "prerequisite": (
+            "Codex CLI must be installed and `codex login` completed on this host "
+            "before the gateway can talk to app-server. This package is only a bridge."
+        ),
         "goal": (
             "Orchestrate from Claude/Cursor with short prompts; let Codex on this "
             "host/VPS run the long coding loop under a token budget."
         ),
         "do": [
+            "Confirm codex CLI + login before other tools.",
             "Call codex_app_status (or codex_app_economy) once per session.",
             "Prefer codex_app_goal with a tight objective + tokenBudget (e.g. 16k–40k).",
             "Use thread compact / archive when context grows; avoid replaying full histories.",
