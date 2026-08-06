@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate Agent Skills layout and required content (no network)."""
+"""Validate router skill tree + mirrors (no network)."""
 from __future__ import annotations
 
 import re
@@ -7,63 +7,86 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+SKILL = "codex-mcp"
 HOST_DIRS = [
     ROOT / "skills",
     ROOT / ".claude" / "skills",
     ROOT / ".codex" / "skills",
     ROOT / ".agents" / "skills",
 ]
-REQUIRED_SKILLS = {"install-codex-mcp", "codex-app-mcp", "create-agent-skill"}
+REQUIRED_REL = [
+    "SKILL.md",
+    "references/modes.md",
+    "references/install.md",
+    "references/operate.md",
+    "references/update.md",
+    "references/executor.md",
+    "references/verifier.md",
+    "references/brainstorm.md",
+    "references/feedback-issues.md",
+    "references/security.md",
+    "scripts/check_ready.sh",
+    "scripts/update_mcp.sh",
+    "scripts/draft_issue.py",
+    "templates/goal-brief.md",
+    "templates/receipt-short.md",
+    "templates/issue-bug.md",
+    "templates/issue-improvement.md",
+    "assets/flow-modes.md",
+]
 FRONT = re.compile(r"^---\n(.*?)\n---\n", re.S)
+BANNED = ("sk-live", "sk-proj-", "BEGIN RSA", "ghp_", "alexzascherinsky@")
 
 
 def main() -> int:
     errors: list[str] = []
-    found: dict[str, list[Path]] = {}
+    canonical = ROOT / "skills" / SKILL
+    if not canonical.is_dir():
+        print("SKILL VERIFY FAIL\n - missing skills/codex-mcp")
+        return 1
+    for rel in REQUIRED_REL:
+        if not (canonical / rel).is_file():
+            errors.append(f"missing {rel}")
+    text = (canonical / "SKILL.md").read_text(encoding="utf-8")
+    m = FRONT.match(text)
+    if not m:
+        errors.append("no frontmatter")
+    else:
+        fm = m.group(1)
+        if re.search(rf"^name:\s*{re.escape(SKILL)}\s*$", fm, re.M) is None:
+            errors.append("name mismatch")
+        if "description:" not in fm:
+            errors.append("missing description")
+    body = text.lower()
+    for needle in ("unofficial", "codex login", "executor", "verifier", "brainstorm", "references/"):
+        if needle not in body:
+            errors.append(f"SKILL.md missing {needle!r}")
     for base in HOST_DIRS:
-        if not base.is_dir():
-            errors.append(f"missing skills root: {base.relative_to(ROOT)}")
+        skill_dir = base / SKILL
+        if not skill_dir.is_dir():
+            errors.append(f"missing mirror {skill_dir.relative_to(ROOT)}")
             continue
-        for skill_dir in sorted(p for p in base.iterdir() if p.is_dir()):
-            skill_md = skill_dir / "SKILL.md"
-            name = skill_dir.name
-            found.setdefault(name, []).append(skill_md)
-            if not skill_md.is_file():
-                errors.append(f"missing {skill_md.relative_to(ROOT)}")
-                continue
-            text = skill_md.read_text(encoding="utf-8")
-            m = FRONT.match(text)
-            if not m:
-                errors.append(f"no YAML frontmatter: {skill_md.relative_to(ROOT)}")
-                continue
-            fm = m.group(1)
-            if re.search(rf"^name:\s*{re.escape(name)}\s*$", fm, re.M) is None:
-                errors.append(f"frontmatter name mismatch: {skill_md.relative_to(ROOT)}")
-            if "description:" not in fm:
-                errors.append(f"missing description: {skill_md.relative_to(ROOT)}")
-            body = text[m.end() :].lower()
-            if "unofficial" not in body:
-                errors.append(f"missing unofficial disclaimer: {skill_md.relative_to(ROOT)}")
-            if name != "create-agent-skill":
-                if "codex login" not in body:
-                    errors.append(f"missing Codex CLI login gate: {skill_md.relative_to(ROOT)}")
-            for banned in ("sk-live", "sk-proj-", "BEGIN RSA", "ghp_"):
-                if banned.lower() in text.lower():
-                    errors.append(f"possible secret pattern {banned}: {skill_md.relative_to(ROOT)}")
-    for req in REQUIRED_SKILLS:
-        if req not in found:
-            errors.append(f"required skill missing: {req}")
-        for base in HOST_DIRS:
-            if base.is_dir() and not (base / req / "SKILL.md").is_file():
-                errors.append(f"skill {req} missing under {base.relative_to(ROOT)}")
+        for rel in REQUIRED_REL:
+            a = canonical / rel
+            b = skill_dir / rel
+            if not b.is_file():
+                errors.append(f"mirror missing {b.relative_to(ROOT)}")
+            elif a.is_file() and b.read_bytes() != a.read_bytes():
+                errors.append(f"mirror drift {b.relative_to(ROOT)}")
+        for child in base.iterdir():
+            if child.is_dir() and child.name != SKILL:
+                errors.append(f"extra skill dir (collapse old): {child.relative_to(ROOT)}")
+    blob = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in canonical.rglob("*") if p.is_file())
+    for banned in BANNED:
+        if banned.lower() in blob.lower():
+            errors.append(f"banned pattern {banned}")
     if errors:
         print("SKILL VERIFY FAIL")
         for e in errors:
             print(" -", e)
         return 1
     print("SKILL VERIFY PASS")
-    for name, paths in sorted(found.items()):
-        print(f"  {name}: {len(paths)} mirrors")
+    print(f"  {SKILL}: {len(HOST_DIRS)} mirrors, {len(REQUIRED_REL)} paths")
     return 0
 
 

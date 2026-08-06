@@ -1,38 +1,17 @@
-# Skills (Claude · Codex · Cursor · others)
+# Skills
 
-> Unofficial project. Skills teach **agents** how to install and operate this MCP
-> **after** Codex CLI is installed and `codex login` succeeded.
+One **router skill**: `codex-mcp`.
 
-## Portable layout
-
-| Path | Host |
-|---|---|
-| `skills/<name>/` | Canonical |
-| `.claude/skills/<name>/` | Claude Code |
-| `.codex/skills/<name>/` | Codex CLI |
-| `.agents/skills/<name>/` | Agent Skills / Cursor-friendly |
-
-## Bundled skills
-
-| Skill | Purpose |
-|---|---|
-| **install-codex-mcp** | Setup only — hard gate on CLI+login |
-| **codex-app-mcp** | Runtime economy + HTTP/VPS |
-| **create-agent-skill** | Author portable skills |
-
-## Copy to personal dirs
-
-```bash
-# Claude
-cp -R .claude/skills/* ~/.claude/skills/
-# Codex
-cp -R .codex/skills/* ~/.codex/skills/
-# Portable
-cp -R .agents/skills/* ~/.agents/skills/
+```text
+skills/codex-mcp/
+  SKILL.md · references/ · scripts/ · templates/ · assets/
 ```
 
-## Validate
+Mirrors: `.claude/skills/`, `.codex/skills/`, `.agents/skills/`.
 
 ```bash
+python scripts/sync_skills.py
 python scripts/verify_skills.py
 ```
+
+Tell the host: *use skill `codex-mcp`*.
