@@ -788,7 +788,8 @@ def test_windows_npm_shim_resolves_to_node_script(
 
     def _safe_new(cls, *args, **kwargs):
         if cls is _pl.Path:
-            cls = _pl.PosixPath
+            # Keep the real host's concrete path class while simulating os.name.
+            cls = type(tmp_path)
         return original_new(cls, *args, **kwargs)
 
     try:
