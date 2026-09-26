@@ -41,7 +41,7 @@ def run_goal(gateway: CodexAppGateway, cwd: Path, timeout: float) -> bool:
                     "Do not modify files or call tools."
                 ),
                 "tokenBudget": 10_000,
-                "model": "gpt-5.6-luna",
+                "model": "gpt-6-luna",
                 "effort": "low",
                 "sandbox": "read-only",
                 "approvalPolicy": "never",
@@ -164,7 +164,7 @@ def run_background_job(gateway: CodexAppGateway, cwd: Path, timeout: float) -> b
                         "or call other tools."
                     ),
                     "tokenBudget": 10_000,
-                    "model": "gpt-5.6-luna",
+                    "model": "gpt-6-luna",
                     "effort": "low",
                     "sandbox": "read-only",
                     "approvalPolicy": "never",

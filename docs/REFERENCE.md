@@ -155,7 +155,7 @@ background coding task:
   "repoRoot": "D:\\Projects\\service",
   "lane": "feature-x",
   "goal": "Реализуй задачу, запусти тесты и сообщи точный результат",
-  "model": "gpt-5.6-sol",
+  "model": "gpt-6-sol",
   "effort": "high",
   "sandbox": "danger-full-access",
   "approvalPolicy": "never"
@@ -181,7 +181,7 @@ A goal is an app-server runtime loop, not a single turn:
     "cwd": "D:\\Projects\\service",
     "objective": "Finish the task, verify it, then call update_goal complete",
     "tokenBudget": 80000,
-    "model": "gpt-5.6-sol",
+    "model": "gpt-6-sol",
     "effort": "high",
     "sandbox": "danger-full-access",
     "approvalPolicy": "never"
@@ -215,7 +215,7 @@ the Desktop Scheduled management UI:
     "request": {
       "cwd": "D:\\Projects\\service",
       "objective": "Проверь проект, исправь подтверждённые дефекты и заверши цель",
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-sol",
       "effort": "high",
       "sandbox": "danger-full-access",
       "approvalPolicy": "never"
